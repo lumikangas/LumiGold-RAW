@@ -1,0 +1,119 @@
+name: Build LumiGold RAW WASM
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-wasm:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout LumiGold-RAW
+        uses: actions/checkout@v4
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 'latest'
+          actions-cache-folder: 'emsdk-cache'
+
+      - name: Verify emcc
+        run: |
+          emcc --version
+          echo "Emscripten ready"
+
+      - name: Download LibRaw 0.21.3
+        run: |
+          if [ -d "libraw/libraw" ]; then
+            echo "LibRaw already present (submodule or committed), skipping download"
+            ls -lh libraw/libraw/libraw.h
+            exit 0
+          fi
+          echo "Downloading LibRaw 0.21.3..."
+          wget -q https://www.libraw.org/data/LibRaw-0.21.3.tar.gz
+          tar xzf LibRaw-0.21.3.tar.gz
+          mv LibRaw-0.21.3 libraw
+          ls -lh libraw/libraw/libraw.h
+          echo "LibRaw $(grep LIBRAW_VERSION_STR libraw/libraw/libraw_version.h | head -n1) ready"
+
+      - name: Build WASM for Nikon NEF diagnostic
+        run: |
+          chmod +x build_nikon.sh
+          ./build_nikon.sh ./libraw
+          
+      - name: Verify outputs
+        run: |
+          echo "=== Build outputs ==="
+          ls -lh wasm/
+          test -f wasm/lumiGoldRaw.js || (echo "ERROR: wasm/lumiGoldRaw.js missing" && exit 1)
+          test -f wasm/lumiGoldRaw.wasm || (echo "ERROR: wasm/lumiGoldRaw.wasm missing" && exit 1)
+          echo "WASM files OK"
+          du -h wasm/lumiGoldRaw.*
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumigold-raw-wasm
+          path: |
+            wasm/lumiGoldRaw.js
+            wasm/lumiGoldRaw.wasm
+          retention-days: 30
+
+      - name: Upload full diagnostic package
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumigold-nikon-diagnostic
+          path: |
+            LumiGold_Nikon_NEF_DIAG.html
+            lumiGoldRawDiag.js
+            lumiGoldRawWorker_v2.js
+            lumiGoldRawWrapper.cpp
+            build_nikon.sh
+            README*.txt
+            wasm/
+          retention-days: 30
+
+  # Optional: deploy to GitHub Pages for live testing
+  deploy-pages:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: lumigold-raw-wasm
+          path: wasm/
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Prepare Pages content
+        run: |
+          mkdir -p _site/wasm
+          cp -v LumiGold_Nikon_NEF_DIAG.html _site/index.html || cp -v LumiGold_Nikon_NEF_DIAG.html _site/
+          cp -v lumiGoldRawDiag.js _site/ || true
+          cp -v lumiGoldRawWorker_v2.js _site/ || true
+          cp -v wasm/lumiGoldRaw.* _site/wasm/
+          ls -R _site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
