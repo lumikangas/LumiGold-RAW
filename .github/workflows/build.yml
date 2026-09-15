@@ -25,19 +25,19 @@ jobs:
           emcc --version
           echo "Emscripten ready"
 
-      - name: Download LibRaw 0.21.3
+      - name: Download LibRaw 0.22.2
         run: |
           if [ -d "libraw/libraw" ]; then
             echo "LibRaw already present (submodule or committed), skipping download"
             ls -lh libraw/libraw/libraw.h
             exit 0
           fi
-          echo "Downloading LibRaw 0.21.3..."
-          wget -q https://www.libraw.org/data/LibRaw-0.21.3.tar.gz
-          tar xzf LibRaw-0.21.3.tar.gz
-          mv LibRaw-0.21.3 libraw
+          echo "Downloading LibRaw 0.22.2..."
+          wget https://www.libraw.org/data/LibRaw-0.22.2.tar.gz
+          tar xzf LibRaw-0.22.2.tar.gz
+          mv LibRaw-0.22.2 libraw
           ls -lh libraw/libraw/libraw.h
-          echo "LibRaw $(grep LIBRAW_VERSION_STR libraw/libraw/libraw_version.h | head -n1) ready"
+          echo "LibRaw 0.22.2 ready"
 
       - name: Build WASM for Nikon NEF diagnostic
         run: |
