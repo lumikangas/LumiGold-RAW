@@ -181,7 +181,7 @@ echo ""
 echo "Building wasm/lumiGoldRaw.js ..."
 echo ""
 
-emcc "${LIBRAW_SRC[@]}" \
+em++ "${LIBRAW_SRC[@]}" \
   ./lumiGoldRawWrapper.cpp \
   -I"$LIBRAW_DIR" \
   -I"$LIBRAW_DIR/src" \
