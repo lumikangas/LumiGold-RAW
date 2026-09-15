@@ -2,7 +2,6 @@
 
 Clean-room RAW decoder for LumiGold Studio - first test: Nikon NEF → LibRaw → Float32 linear RGB → LumiGold GLSL.
 
-**No Rawnd code. No Adobe matrices yet. Existing engine untouched.**
 
 ## Architecture (your design)
 
