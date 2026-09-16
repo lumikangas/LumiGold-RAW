@@ -104,7 +104,15 @@ jobs:
       - name: Prepare Pages content
         run: |
           mkdir -p _site/wasm
-          cp -v LumiGold_Nikon_NEF_DIAG.html _site/index.html || cp -v LumiGold_Nikon_NEF_DIAG.html _site/
+          # V4 FINAL is the fixed entry point (hooks interceptRawIfNeeded, not window.handleImageFile)
+          if [ -f "LumiGold-Nikon-NEF-DIAG-V4-FINAL.html" ]; then
+            cp -v LumiGold-Nikon-NEF-DIAG-V4-FINAL.html _site/index.html
+            cp -v LumiGold-Nikon-NEF-DIAG-V4-FINAL.html _site/
+          else
+            cp -v LumiGold_Nikon_NEF_DIAG.html _site/index.html
+          fi
+          cp -v lumiGoldRawWorker_v2.js _site/ || true
+          cp -v wasm/lumiGoldRaw.* _site/wasm/
           cp -v lumiGoldRawDiag.js _site/ || true
           cp -v lumiGoldRawWorker_v2.js _site/ || true
           cp -v wasm/lumiGoldRaw.* _site/wasm/
