@@ -30,7 +30,7 @@ jobs:
         with:
           path: libraw
           key: libraw-0.22.2
-          
+
       - name: Build WASM
         run: |
           emcc --version
@@ -40,8 +40,15 @@ jobs:
           ls -lh wasm/
           SIZE=$(stat -c%s wasm/lumiGoldRaw.wasm)
           echo "WASM size $SIZE"
-          if [ "$SIZE" -lt 100000 ]; then echo "WASM suspiciously small"; exit 1; fi
+          if [ "$SIZE" -lt 1000000 ]; then echo "WASM too small"; exit 1; fi
 
+      - name: Commit WASM
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "actions@github.com"
+          git add wasm/ || true
+          git diff --staged --quiet || git commit -m "Auto-build WASM 0.22.2 128MB"
+          git push || true
 
       - name: Prepare Pages
         run: |
