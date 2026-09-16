@@ -7616,6 +7616,32 @@ async function interceptRawIfNeeded(file) {
     
     // Convert Float32 to PNG preview for LumiGold pipeline
     const float32RGB = decoded.float32RGB;
+      let min = Infinity;
+let max = -Infinity;
+let sum = 0;
+let bad = 0;
+
+for (let i = 0; i < float32RGB.length; i++) {
+  const v = float32RGB[i];
+
+  if (!Number.isFinite(v)) {
+    bad++;
+    continue;
+  }
+
+  if (v < min) min = v;
+  if (v > max) max = v;
+  sum += v;
+}
+
+console.log('[LumiGold RAW] FLOAT32 SANITY', {
+  file: file.name,
+  floats: float32RGB.length,
+  min,
+  max,
+  mean: sum / (float32RGB.length - bad),
+  bad
+});
     const w = decoded.width, h = decoded.height;
     window.LumiGoldRawState.lastFloat32 = float32RGB;
     window.LumiGoldRawState.lastMeta = decoded.meta;
