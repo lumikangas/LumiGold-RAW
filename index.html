@@ -7432,51 +7432,47 @@ window.LumiGoldRawState = {
 
 async function initLibRawDirect() {
   if (window.LumiGoldRawState.Module) return window.LumiGoldRawState.Module;
-  const wasmJsUrl = new URL('./wasm/lumiGoldRaw.js', location.href).href;
   const wasmBaseUrl = new URL('./wasm/', location.href).href;
+  const wasmJsUrl = wasmBaseUrl + 'lumiGoldRaw.js';
   const wasmBinaryUrl = wasmBaseUrl + 'lumiGoldRaw.wasm';
-  console.log('[LumiGold RAW] Direct init, wasmJsUrl=' + wasmJsUrl);
-  console.log('[LumiGold RAW] wasmBaseUrl=' + wasmBaseUrl);
-  console.log('[LumiGold RAW] wasmBinaryUrl=' + wasmBinaryUrl);
-  
-  // Test if wasm binary is reachable first
-  try {
-    console.log('[LumiGold RAW] Testing fetch of wasm binary...');
-    const testResp = await fetch(wasmBinaryUrl, {method:'HEAD'});
-    console.log('[LumiGold RAW] wasm binary HEAD status=' + testResp.status + ' content-type=' + testResp.headers.get('content-type') + ' content-length=' + testResp.headers.get('content-length'));
-    if (!testResp.ok) {
-      console.error('[LumiGold RAW] wasm binary NOT FOUND at ' + wasmBinaryUrl + ' status=' + testResp.status);
-      showNikonDiag({ error: 'WASM binary 404 at ' + wasmBinaryUrl + ' — check GitHub Pages wasm/ folder', fileName: 'WASM missing' }, null, false);
-      throw new Error('WASM binary 404 at ' + wasmBinaryUrl);
-    }
-  } catch(e) {
-    console.error('[LumiGold RAW] fetch test failed', e);
-    // Continue anyway, Emscripten will fail with clearer error
-  }
+  console.log('[LumiGold RAW] Direct init via SCRIPT TAG, js=' + wasmJsUrl);
+  console.log('[LumiGold RAW] wasm binary=' + wasmBinaryUrl);
 
   try {
-    console.log('[LumiGold RAW] Importing WASM JS module...');
-    const mod = await import(wasmJsUrl);
-    console.log('[LumiGold RAW] WASM JS imported, module keys=' + Object.keys(mod).join(','));
-    console.log('[LumiGold RAW] Calling mod.default()...');
-    const Module = await mod.default({
+    const testResp = await fetch(wasmBinaryUrl, {method:'HEAD'});
+    console.log('[LumiGold RAW] wasm HEAD status=' + testResp.status + ' len=' + testResp.headers.get('content-length'));
+  } catch(e){ console.error('WASM HEAD fetch failed', e); }
+
+  try {
+    if (typeof LumiGoldRawModule === 'undefined') {
+      console.log('[LumiGold RAW] Loading ' + wasmJsUrl + ' via script tag...');
+      await new Promise((resolve, reject)=>{
+        const s = document.createElement('script');
+        s.src = wasmJsUrl;
+        s.onload = ()=>{ console.log('[LumiGold RAW] Script loaded, LumiGoldRawModule=' + (typeof LumiGoldRawModule)); resolve(); };
+        s.onerror = (e)=>{ console.error('Script load error', e); reject(new Error('Failed to load ' + wasmJsUrl)); };
+        document.head.appendChild(s);
+      });
+    }
+    console.log('[LumiGold RAW] Calling LumiGoldRawModule()...');
+    const Module = await LumiGoldRawModule({
       locateFile: (p) => {
         const full = wasmBaseUrl + p;
         console.log('[LumiGold RAW] locateFile ' + p + ' -> ' + full);
         return full;
       }
     });
-    console.log('[LumiGold RAW] Module ready, _lg_open=' + (typeof Module._lg_open) + ' _lg_get_width=' + (typeof Module._lg_get_width));
+    console.log('[LumiGold RAW] Module ready! _lg_open=' + (typeof Module._lg_open));
     window.LumiGoldRawState.Module = Module;
     window.LumiGoldRawState.ready = true;
     return Module;
   } catch(e) {
     console.error('[LumiGold RAW] Direct init FAILED', e);
     console.error(e.stack);
-    showNikonDiag({ error: 'WASM init failed: ' + e.message + ' — check console, wasm/ folder must contain lumiGoldRaw.js + lumiGoldRaw.wasm', fileName: 'WASM init failed' }, null, false);
-    if (typeof showCustomToast === 'function') showCustomToast("WASM Init Failed", e.message, true);
+    showNikonDiag({ error: 'WASM init failed: ' + e.message, fileName: 'WASM init failed' }, null, false);
     throw e;
   }
+}
 }
 }
 
