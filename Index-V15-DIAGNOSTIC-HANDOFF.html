@@ -7615,7 +7615,7 @@ async function interceptRawIfNeeded(file) {
     showNikonDiag(decoded.meta, decoded.stats, false);
     
     // Convert Float32 to PNG preview for LumiGold pipeline
-    const float32RGB = new Float32Array(decoded.buffer);
+    const float32RGB = decoded.float32RGB;
     const w = decoded.width, h = decoded.height;
     window.LumiGoldRawState.lastFloat32 = float32RGB;
     window.LumiGoldRawState.lastMeta = decoded.meta;
