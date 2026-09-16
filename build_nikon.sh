@@ -111,7 +111,7 @@ LIBRAW_SRC=(
 
 echo "Building ${#LIBRAW_SRC[@]} files with 128MB..."
 
-em++ "${LIBRAW_SRC[@]}" ./lumiGoldRawWrapper_V15_FIXED_HANDOFF.cpp   -I"$LIBRAW_DIR" -I"$LIBRAW_DIR/src" -I"$LIBRAW_DIR/internal" -I"$LIBRAW_DIR/libraw"   -DLIBRAW_NO_WARNS   -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=128MB -s MAXIMUM_MEMORY=512MB -s STACK_SIZE=4MB   -s MODULARIZE=1 -s EXPORT_NAME="LumiGoldRawModule"   -s EXPORTED_FUNCTIONS='["_lg_open","_lg_get_width","_lg_get_height","_lg_get_black","_lg_get_white","_lg_get_data_maximum","_lg_get_linear_max","_lg_get_cam_mul","_lg_get_cam_mul","_lg_extract_rgb","_lg_close","_malloc","_free","_lg_get_last_error"]'   -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAPF32","HEAP32","HEAPU32"]'   -s ENVIRONMENT=web,worker -O2   -o wasm/lumiGoldRaw.js
+em++ "${LIBRAW_SRC[@]}" ./lumiGoldRawWrapper.cpp   -I"$LIBRAW_DIR" -I"$LIBRAW_DIR/src" -I"$LIBRAW_DIR/internal" -I"$LIBRAW_DIR/libraw"   -DLIBRAW_NO_WARNS   -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=128MB -s MAXIMUM_MEMORY=512MB -s STACK_SIZE=4MB   -s MODULARIZE=1 -s EXPORT_NAME="LumiGoldRawModule"   -s EXPORTED_FUNCTIONS='["_lg_open","_lg_get_width","_lg_get_height","_lg_get_black","_lg_get_white","_lg_get_data_maximum","_lg_get_linear_max","_lg_get_cam_mul","_lg_get_cam_mul","_lg_extract_rgb","_lg_close","_malloc","_free","_lg_get_last_error"]'   -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAPF32","HEAP32","HEAPU32"]'   -s ENVIRONMENT=web,worker -O2   -o wasm/lumiGoldRaw.js
 
 echo "=== Build OK ==="
 ls -lh wasm/
