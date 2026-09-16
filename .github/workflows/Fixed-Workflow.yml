@@ -1,0 +1,76 @@
+name: Build LumiGold RAW WASM + Deploy Pages
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.50
+
+      - name: Build Nikon WASM
+        run: |
+          chmod +x ./build_nikon.sh
+          ./build_nikon.sh
+          ls -lh wasm/
+          test -f wasm/lumiGoldRaw.js
+          test -f wasm/lumiGoldRaw.wasm
+          echo "WASM build OK"
+
+      - name: Prepare Pages artifact
+        run: |
+          mkdir -p _site/wasm
+          cp -v wasm/lumiGoldRaw.js _site/wasm/
+          cp -v wasm/lumiGoldRaw.wasm _site/wasm/
+          cp -v index.html _site/ || echo "no index.html"
+          cp -v .nojekyll _site/ || touch _site/.nojekyll
+          cp -v LumiGold-*.html _site/ 2>/dev/null || true
+          cp -v Wasm-*.html _site/ 2>/dev/null || true
+          cp -v *.html _site/ 2>/dev/null || true
+          ls -R _site
+
+      - name: Upload WASM artifact (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumigold-raw-wasm
+          path: wasm/
+
+      - name: Upload diagnostic artifact (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumigold-nikon-diagnostic
+          path: _site/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site/
+
+  deploy-pages:
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
