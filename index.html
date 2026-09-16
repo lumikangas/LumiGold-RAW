@@ -7431,7 +7431,7 @@ window.LumiGoldRawState = {
 };
 
 async function initLibRawDirect() {
-  if (window.LumiGoldRawState.Module) return window.LumiGoldRawState.Module;
+  if (window.LumiGoldRawState && window.LumiGoldRawState.Module) return window.LumiGoldRawState.Module;
   const wasmBaseUrl = new URL('./wasm/', location.href).href;
   const wasmJsUrl = wasmBaseUrl + 'lumiGoldRaw.js';
   const wasmBinaryUrl = wasmBaseUrl + 'lumiGoldRaw.wasm';
@@ -7441,7 +7441,7 @@ async function initLibRawDirect() {
   try {
     const testResp = await fetch(wasmBinaryUrl, {method:'HEAD'});
     console.log('[LumiGold RAW] wasm HEAD status=' + testResp.status + ' len=' + testResp.headers.get('content-length'));
-  } catch(e){ console.error('WASM HEAD fetch failed', e); }
+  } catch(e){ console.warn('WASM HEAD fetch failed', e); }
 
   try {
     if (typeof LumiGoldRawModule === 'undefined') {
@@ -7449,6 +7449,7 @@ async function initLibRawDirect() {
       await new Promise((resolve, reject)=>{
         const s = document.createElement('script');
         s.src = wasmJsUrl;
+        s.async = false;
         s.onload = ()=>{ console.log('[LumiGold RAW] Script loaded, LumiGoldRawModule=' + (typeof LumiGoldRawModule)); resolve(); };
         s.onerror = (e)=>{ console.error('Script load error', e); reject(new Error('Failed to load ' + wasmJsUrl)); };
         document.head.appendChild(s);
@@ -7463,13 +7464,15 @@ async function initLibRawDirect() {
       }
     });
     console.log('[LumiGold RAW] Module ready! _lg_open=' + (typeof Module._lg_open));
+    if (!window.LumiGoldRawState) window.LumiGoldRawState = {};
     window.LumiGoldRawState.Module = Module;
     window.LumiGoldRawState.ready = true;
     return Module;
   } catch(e) {
     console.error('[LumiGold RAW] Direct init FAILED', e);
-    console.error(e.stack);
-    showNikonDiag({ error: 'WASM init failed: ' + e.message, fileName: 'WASM init failed' }, null, false);
+    if (typeof showNikonDiag === 'function') {
+      showNikonDiag({ error: 'WASM init failed: ' + e.message, fileName: 'WASM init failed' }, null, false);
+    }
     throw e;
   }
 }
