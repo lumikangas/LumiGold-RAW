@@ -489,7 +489,7 @@ input[type=range]::-webkit-slider-thumb:hover {
                         </svg>
                     </span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-zinc-300 group-hover:text-amber-500">IMPORT PHOTO</span>
-                    <input type="file" id="imgInput" accept="image/*" class="hidden">
+                    <input type="file" id="imgInput" accept="image/*,.nef,.cr2,.cr3,.arw,.dng,.orf,.rw2,.raf,.pef,.tiff,.tif,.NRW" class="hidden">
                 </label>
             </div>
 
@@ -1266,7 +1266,7 @@ input[type=range]::-webkit-slider-thumb:hover {
                     <button id="exportBtn" class="w-full py-1.5 bg-amber-500 hover:bg-amber-400 transition-all text-black font-extrabold rounded text-[8px] uppercase tracking-wider shadow-lg"title="Export high quality jpg image.">
                         Export
                     </button>
-                    <input type="file" id="batchInput" multiple accept="image/*,.jpg,.jpeg,.png,.webp,.tiff" class="hidden">
+                    <input type="file" id="batchInput" multiple accept="image/*,.jpg,.jpeg,.png,.webp,.tiff,.nef,.cr2,.cr3,.arw,.dng,.orf,.rw2,.raf,.pef,.NRW" class="hidden">
                 </div>
             </div>
         </div>
@@ -7440,7 +7440,7 @@ async function initLibRawDirect() {
 
   try {
     const testResp = await fetch(wasmBinaryUrl, {method:'HEAD'});
-    console.log('[LumiGold RAW] wasm HEAD status=' + testResp.status + ' len=' + testResp.headers.get('content-length'));
+    console.log('[LumiGold RAW] wasm HEAD status=' + testResp.status + ' len=' + testResp.headers.get('content-length') + ' expect ~2MB for 0.22.2');
   } catch(e){ console.warn('WASM HEAD fetch failed', e); }
 
   try {
@@ -7485,52 +7485,70 @@ async function decodeRawDirect(buffer, fileName) {
   const ptr = Module._malloc(buffer.byteLength);
   Module.HEAPU8.set(new Uint8Array(buffer), ptr);
   console.log('[LumiGold RAW] Calling _lg_open with ptr=' + ptr + ' len=' + buffer.byteLength);
-  const ret = Module._lg_open(ptr, buffer.byteLength);
-  console.log('[LumiGold RAW] _lg_open ret=' + ret);
-  if (ret !== 0) throw new Error('lg_open failed ' + ret);
+  const handle = Module._lg_open(ptr, buffer.byteLength);
+  console.log('[LumiGold RAW] _lg_open handle=' + handle);
+  if (!handle || handle === 0) {
+    const errCode = Module._lg_get_last_error ? Module._lg_get_last_error() : -1;
+    Module._free(ptr);
+    throw new Error('lg_open failed 0 last_error=' + errCode);
+  }
 
-  const width = Module._lg_get_width();
-  const height = Module._lg_get_height();
-  const black = Module._lg_get_black();
-  const white = Module._lg_get_white();
-  const data_maximum = Module._lg_get_data_maximum();
-  const linear_max = [
-    Module._lg_get_linear_max(0),
-    Module._lg_get_linear_max(1),
-    Module._lg_get_linear_max(2),
-    Module._lg_get_linear_max(3)
-  ];
-  const cam_mul = [
-    Module._lg_get_cam_mul(0),
-    Module._lg_get_cam_mul(1),
-    Module._lg_get_cam_mul(2),
-    Module._lg_get_cam_mul(3)
-  ];
-  console.log('[LumiGold RAW] Decoded ' + width + 'x' + height + ' black=' + black + ' white=' + white);
+  const width = Module._lg_get_width(handle);
+  const height = Module._lg_get_height(handle);
+  const black = Module._lg_get_black(handle);
+  const white = Module._lg_get_white(handle);
+  const data_maximum = Module._lg_get_data_maximum ? Module._lg_get_data_maximum(handle) : white;
+  const linear_max = Module._lg_get_linear_max ? Module._lg_get_linear_max(handle) : white;
+
+  // cam_mul is float* pointer
+  let cam_mul = [1,1,1,1];
+  try {
+    const camPtr = Module._lg_get_cam_mul(handle);
+    if (camPtr) {
+      const f = Module.HEAPF32.subarray(camPtr/4, camPtr/4+4);
+      cam_mul = [f[0], f[1], f[2], f[3]];
+    }
+  } catch(e){}
+
+  console.log('[LumiGold RAW] Decoded ' + width + 'x' + height + ' black=' + black + ' white=' + white + ' cam_mul=' + cam_mul.join(','));
+
+  if (width === 0 || height === 0) {
+    Module._lg_close(handle);
+    Module._free(ptr);
+    throw new Error('decoded zero size');
+  }
+
+  const floatPtr = Module._lg_extract_rgb(handle);
+  console.log('[LumiGold RAW] extract floatPtr=' + floatPtr);
+  if (!floatPtr || floatPtr === 0) {
+    Module._lg_close(handle);
+    Module._free(ptr);
+    throw new Error('extract failed null ptr');
+  }
 
   const numFloats = width * height * 3;
-  const outBytes = numFloats * 4;
-  const outPtr = Module._malloc(outBytes);
-  const extractRet = Module._lg_extract_rgb(outPtr);
-  console.log('[LumiGold RAW] extract ret=' + extractRet);
-  if (extractRet !== 0) throw new Error('extract failed ' + extractRet);
+  const floatView = Module.HEAPF32.subarray(floatPtr/4, floatPtr/4 + numFloats);
+  // Copy out because WASM memory may grow
+  const float32RGB = new Float32Array(floatView);
 
-  const floatView = new Float32Array(Module.HEAPF32.buffer, outPtr / 4, numFloats);
-  const result = new Float32Array(floatView);
-  
-  let min=Infinity, max=-Infinity, sum=0, sumR=0, sumG=0, sumB=0;
-  for (let i=0;i<result.length;i+=3){ const r=result[i], g=result[i+1], b=result[i+2]; if(r<min)min=r; if(g<min)min=g; if(b<min)min=b; if(r>max)max=r; if(g>max)max=g; if(b>max)max=b; sum+=r+g+b; sumR+=r; sumG+=g; sumB+=b; }
-  const total = result.length/3;
-  const stats = { min, max, mean: sum/(total*3), rMean: sumR/total, gMean: sumG/total, bMean: sumB/total };
+  const stats = {
+    min: Math.min(...float32RGB.slice(0,1000)),
+    max: Math.max(...float32RGB.slice(0,1000)),
+    mean: float32RGB.slice(0,1000).reduce((a,b)=>a+b,0)/1000
+  };
 
-  Module._free(outPtr);
+  // Cleanup WASM allocations except float buffer which we copied
+  Module._lg_close(handle);
   Module._free(ptr);
-  Module._lg_close();
 
-  return { width, height, buffer: result.buffer, float32: result, meta: { black, white, data_maximum, linear_max, cam_mul, fileName, width, height, fileType: fileName.toLowerCase().endsWith('.nef') ? 'Nikon NEF / LibRaw' : 'RAW / LibRaw' }, stats };
+  const meta = {
+    black, white, data_maximum, linear_max, cam_mul, fileName, width, height,
+    fileType: fileName.toLowerCase().endsWith('.nef') ? 'Nikon NEF / LibRaw 0.22.2' : 'RAW / LibRaw 0.22.2'
+  };
+  return { width, height, float32RGB, meta, stats };
 }
 
-function showNikonDiag(meta, stats, needWasm) {
+function showNikonDiagfunction showNikonDiag(meta, stats, needWasm) {
   const panel = document.getElementById('rawDiagPanel');
   const content = document.getElementById('rawDiagContent');
   const fstats = document.getElementById('rawDiagFloatStats');
