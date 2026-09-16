@@ -7440,30 +7440,47 @@ window.LumiGoldRawState = {
 
 // --- INLINE BLOB WORKER - NO EXTERNAL FILE NEEDED - FIXES GITHUB PAGES 404 ---
 const WORKER_CODE = `
-// lumiGoldRawWorker_v2.js - Fixed for GitHub Pages, with error reporting
 let Module = null;
+let WASM_JS_URL = null;
+let WASM_BASE_URL = null;
 
 async function init() {
   try {
-    console.log('[WORKER] Importing ./wasm/lumiGoldRaw.js');
-    const mod = await import('./wasm/lumiGoldRaw.js');
+    // WASM_JS_URL is set from main thread via absolute URL
+    const jsUrl = WASM_JS_URL || './wasm/lumiGoldRaw.js';
+    const baseUrl = WASM_BASE_URL || './wasm/';
+    console.log('[WORKER] Importing ' + jsUrl);
+    console.log('[WORKER] Base URL for wasm binary: ' + baseUrl);
+    const mod = await import(jsUrl);
     console.log('[WORKER] WASM JS loaded, initializing Module...');
     Module = await mod.default({
       locateFile: (p) => {
-        console.log('[WORKER] locateFile: ' + p + ' -> ./wasm/' + p);
-        return './wasm/' + p;
+        const full = baseUrl + p;
+        console.log('[WORKER] locateFile: ' + p + ' -> ' + full);
+        return full;
       }
     });
     console.log('[WORKER] Module ready, has _lg_open=' + (typeof Module._lg_open));
     postMessage({ type: 'ready', hasWasm: true });
   } catch(e) {
     console.error('[WORKER] Init failed', e);
-    postMessage({ type: 'ready', hasWasm: false, error: e.message, stack: e.stack });
+    postMessage({ type: 'ready', hasWasm: false, error: e.message, stack: e.stack + '
+jsUrl=' + WASM_JS_URL });
   }
 }
 
 self.onmessage = async (e) => {
-  const { id, buffer, fileName } = e.data;
+  const { id, buffer, fileName, wasmJsUrl, wasmBaseUrl } = e.data;
+  if (wasmJsUrl) WASM_JS_URL = wasmJsUrl;
+  if (wasmBaseUrl) WASM_BASE_URL = wasmBaseUrl;
+  
+  if (!buffer) {
+    // Just setting URLs
+    console.log('[WORKER] URLs set, calling init');
+    await init();
+    return;
+  }
+  
   console.log('[WORKER] Received file', fileName, buffer.byteLength);
   try {
     if (!Module) {
@@ -7568,17 +7585,25 @@ self.onmessage = async (e) => {
     postMessage({ id, type: 'error', message: err.message, stack: err.stack });
   }
 };
-
-init();
 `;
+
 
 function initLibRawWorker() {
   if (window.LumiGoldRawState.worker) return window.LumiGoldRawState.worker;
-  console.log('[LumiGold RAW] Initializing LibRaw worker from Blob (no external file needed)...');
+  console.log('[LumiGold RAW] Initializing LibRaw worker from Blob with absolute URLs...');
   try {
+    const wasmJsUrl = new URL('./wasm/lumiGoldRaw.js', location.href).href;
+    const wasmBaseUrl = new URL('./wasm/', location.href).href;
+    console.log('[LumiGold RAW] wasmJsUrl = ' + wasmJsUrl);
+    console.log('[LumiGold RAW] wasmBaseUrl = ' + wasmBaseUrl);
+    
     const blob = new Blob([WORKER_CODE], {type: 'application/javascript'});
     const url = URL.createObjectURL(blob);
     const worker = new Worker(url, {type: 'module'});
+    
+    // Set URLs immediately
+    worker.postMessage({ wasmJsUrl: wasmJsUrl, wasmBaseUrl: wasmBaseUrl });
+    
     worker.onmessage = function(e) {
       const msg = e.data;
       if (msg.type === 'ready') {
@@ -7587,7 +7612,7 @@ function initLibRawWorker() {
         console.log('[LumiGold RAW] Worker ready, hasWasm=' + msg.hasWasm + (msg.error ? ' error=' + msg.error : ''));
         if (msg.error) console.error('[WORKER READY ERROR]', msg.error, msg.stack);
         if (!msg.hasWasm && window.LumiGoldRawState.pendingResolve) {
-          console.log('[LumiGold RAW] No WASM, falling back to JPEG preview');
+          console.log('[LumiGold RAW] No WASM, falling back to JPEG preview - check wasm/ files at: ' + wasmJsUrl);
           (async () => {
             const fallback = await _originalInterceptRawIfNeeded(window.LumiGoldRawState.pendingFile);
             window.LumiGoldRawState.pendingResolve(fallback);
@@ -7669,9 +7694,9 @@ function initLibRawWorker() {
     };
     worker.onerror = function(e) {
       console.error('[LumiGold RAW] Worker onerror event', e.message, e);
-      console.error('[LumiGold RAW] Check: Is wasm/lumiGoldRaw.js reachable at ./wasm/lumiGoldRaw.js ? Is wasm/lumiGoldRaw.wasm reachable?');
+      console.error('[LumiGold RAW] wasmJsUrl tried: ' + wasmJsUrl);
       console.error('Error:', e);
-      if (typeof showCustomToast === 'function') showCustomToast("WASM Error", e.message || 'Worker failed - check wasm/ files exist', true);
+      if (typeof showCustomToast === 'function') showCustomToast("WASM Error", e.message || 'Worker failed - check wasm/ files exist at ' + wasmJsUrl, true);
       (async () => {
         const fallback = await _originalInterceptRawIfNeeded(window.LumiGoldRawState.pendingFile);
         if (window.LumiGoldRawState.pendingResolve) {
@@ -7681,7 +7706,8 @@ function initLibRawWorker() {
       })();
     };
     window.LumiGoldRawState.worker = worker;
-    console.log('[LumiGold RAW] Blob worker created, waiting for ready...');
+    window.LumiGoldRawState.wasmJsUrl = wasmJsUrl;
+    console.log('[LumiGold RAW] Blob worker created with absolute URLs, waiting for ready...');
     return worker;
   } catch(e) {
     console.error('[LumiGold RAW] Failed to create Blob worker, JPEG fallback', e);
