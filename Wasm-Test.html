@@ -1,0 +1,30 @@
+<!DOCTYPE html><html><head><title>WASM Test</title></head><body>
+<h1>WASM files test</h1>
+<script>
+async function test(){
+  const base = new URL('./wasm/', location.href).href;
+  const jsUrl = base + 'lumiGoldRaw.js';
+  const wasmUrl = base + 'lumiGoldRaw.wasm';
+  document.body.innerHTML += '<p>Testing ' + jsUrl + '</p>';
+  try {
+    const r1 = await fetch(jsUrl, {method:'HEAD'});
+    document.body.innerHTML += '<p>JS HEAD: ' + r1.status + ' ' + r1.headers.get('content-type') + ' len=' + r1.headers.get('content-length') + '</p>';
+  } catch(e){ document.body.innerHTML += '<p>JS fetch error ' + e + '</p>'; }
+  try {
+    const r2 = await fetch(wasmUrl, {method:'HEAD'});
+    document.body.innerHTML += '<p>WASM HEAD: ' + r2.status + ' ' + r2.headers.get('content-type') + ' len=' + r2.headers.get('content-length') + '</p>';
+    if(!r2.ok) document.body.innerHTML += '<p style="color:red">WASM 404 - .nojekyll needed, re-push wasm/</p>';
+  } catch(e){ document.body.innerHTML += '<p>WASM fetch error ' + e + '</p>'; }
+  
+  try {
+    const mod = await import(jsUrl);
+    document.body.innerHTML += '<p>Import OK, keys=' + Object.keys(mod).join(',') + '</p>';
+    const Module = await mod.default({locateFile: (p)=> base+p});
+    document.body.innerHTML += '<p style="color:green">Module ready _lg_open=' + typeof Module._lg_open + '</p>';
+  } catch(e){
+    document.body.innerHTML += '<p style="color:red">Module init failed: ' + e.message + '</p><pre>' + e.stack + '</pre>';
+  }
+}
+test();
+</script>
+</body></html>
