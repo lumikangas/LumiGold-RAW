@@ -1,4 +1,4 @@
-name: Build LumiGold RAW WASM + Deploy Pages
+name: Build Nikon WASM + Deploy Pages
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -21,46 +21,362 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Emscripten
+      - name: Setup Emscripten 3.1.73
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.50
+          version: 3.1.73
 
-      - name: Build Nikon WASM (best effort)
+      - name: Cache LibRaw
+        uses: actions/cache@v4
+        with:
+          path: libraw
+          key: libraw-0.21.3-${ runner.os }
+
+      - name: Overwrite with FIXED wrapper and build script (128MB)
         run: |
-          chmod +x ./build_nikon.sh || true
-          set +e
-          ./build_nikon.sh
-          STATUS=$?
+          cat > lumiGoldRawWrapper.cpp <<'WRAPPER_EOF'
+
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <libraw/libraw.h>
+
+struct LumiHandle {
+  LibRaw* raw;
+  uint8_t* fileData; // keep original buffer alive
+  size_t fileSize;
+  int width;
+  int height;
+  float* rgbFloat; // allocated linear RGB
+};
+
+// Global last error for debugging
+static int g_last_error = 0;
+static char g_last_msg[256] = {0};
+
+extern "C" {
+
+// Open buffer - returns handle id (pointer as int) or 0 on failure
+int lg_open(uint8_t* data, int size) {
+  if(!data || size <= 0) return 0;
+  LibRaw* lr = new LibRaw();
+  // Important: LibRaw needs to copy or keep buffer, open_buffer does not take ownership
+  int ret = lr->open_buffer(data, size);
+  if(ret != LIBRAW_SUCCESS) {
+    g_last_error = ret;
+    snprintf(g_last_msg, sizeof(g_last_msg), "open_buffer failed %d", ret);
+    delete lr;
+    return 0;
+  }
+  // Unpack to check if valid RAW (optional but validates)
+  // We don't unpack full image here, just check metadata
+  ret = lr->unpack();
+  if(ret != LIBRAW_SUCCESS) {
+    g_last_error = ret;
+    snprintf(g_last_msg, sizeof(g_last_msg), "unpack failed %d", ret);
+    lr->recycle();
+    delete lr;
+    return 0;
+  }
+  
+  LumiHandle* h = new LumiHandle();
+  h->raw = lr;
+  h->fileData = nullptr; // we don't own the JS buffer
+  h->fileSize = size;
+  h->width = lr->imgdata.sizes.iwidth;
+  h->height = lr->imgdata.sizes.iheight;
+  h->rgbFloat = nullptr;
+  g_last_error = 0;
+  return (int)(uintptr_t)h;
+}
+
+int lg_get_width(int handle) {
+  if(!handle) return 0;
+  LumiHandle* h = (LumiHandle*)(uintptr_t)handle;
+  return h->raw ? h->raw->imgdata.sizes.iwidth : 0;
+}
+int lg_get_height(int handle) {
+  if(!handle) return 0;
+  LumiHandle* h = (LumiHandle*)(uintptr_t)handle;
+  return h->raw ? h->raw->imgdata.sizes.iheight : 0;
+}
+int lg_get_black(int handle) {
+  if(!handle) return 0;
+  LumiHandle* h = (LumiHandle*)(uintptr_t)handle;
+  return h->raw ? h->raw->imgdata.color.black : 0;
+}
+int lg_get_white(int handle) {
+  if(!handle) return 0;
+  LumiHandle* h = (LumiHandle*)(uintptr_t)handle;
+  return h->raw ? h->raw->imgdata.color.maximum : 0;
+}
+int lg_get_data_maximum(int handle) {
+  if(!handle) return 0;
+  LumiHandle* h = (LumiHandle*)(uintptr_t)handle;
+  return h->raw ? h->raw->imgdata.color.data_maximum : 0;
+}
+float lg_get_linear_max(int handle) {
+  if(!handle) return 0;
+  LumiHandle* h = (LumiHandle*)(uintptr_t)handle;
+  if(!h->raw) return 0;
+  // Use maximum, but also check linear_max if available
+  return (float)h->raw->imgdata.color.maximum;
+}
+float* lg_get_cam_mul(int handle) {
+  if(!handle) return nullptr;
+  LumiHandle* h = (LumiHandle*)(uintptr_t)handle;
+  if(!h->raw) return nullptr;
+  return h->raw->imgdata.color.cam_mul;
+}
+float* lg_get_cmatrix(int handle) {
+  if(!handle) return nullptr;
+  LumiHandle* h = (LumiHandle*)(uintptr_t)handle;
+  if(!h->raw) return nullptr;
+  // cmatrix is [3][4]
+  return &h->raw->imgdata.color.cmatrix[0][0];
+}
+float* lg_get_rgb_cam(int handle) {
+  if(!handle) return nullptr;
+  LumiHandle* h = (LumiHandle*)(uintptr_t)handle;
+  if(!h->raw) return nullptr;
+  return &h->raw->imgdata.color.rgb_cam[0][0];
+}
+float* lg_get_cam_xyz(int handle) {
+  if(!handle) return nullptr;
+  LumiHandle* h = (LumiHandle*)(uintptr_t)handle;
+  if(!h->raw) return nullptr;
+  return &h->raw->imgdata.color.cam_xyz[0][0];
+}
+
+float* lg_extract_rgb(int handle) {
+  if(!handle) return nullptr;
+  LumiHandle* h = (LumiHandle*)(uintptr_t)handle;
+  LibRaw* lr = h->raw;
+  if(!lr) return nullptr;
+  
+  // Already unpacked in lg_open, now dcraw_process + make_mem_image
+  // Use half-size? No, full linear
+  lr->imgdata.params.use_camera_wb = 1;
+  lr->imgdata.params.use_auto_wb = 0;
+  lr->imgdata.params.no_auto_bright = 1;
+  lr->imgdata.params.output_bps = 16;
+  lr->imgdata.params.gamm[0] = 1.0;
+  lr->imgdata.params.gamm[1] = 1.0;
+  
+  int ret = lr->dcraw_process();
+  if(ret != LIBRAW_SUCCESS) {
+    g_last_error = ret;
+    return nullptr;
+  }
+  
+  libraw_processed_image_t* img = lr->dcraw_make_mem_image(&ret);
+  if(!img || ret != LIBRAW_SUCCESS) {
+    g_last_error = ret;
+    return nullptr;
+  }
+  
+  int w = img->width;
+  int hh = img->height;
+  int colors = img->colors;
+  int bps = img->bits;
+  
+  // Allocate float buffer
+  size_t num = (size_t)w * hh * 3;
+  if(h->rgbFloat) free(h->rgbFloat);
+  h->rgbFloat = (float*)malloc(num * sizeof(float));
+  
+  if(bps == 16) {
+    uint16_t* src = (uint16_t*)img->data;
+    for(size_t i=0;i<num;i++) {
+      h->rgbFloat[i] = src[i] / 65535.0f;
+    }
+  } else {
+    uint8_t* src = img->data;
+    for(size_t i=0;i<num;i++) {
+      h->rgbFloat[i] = src[i] / 255.0f;
+    }
+  }
+  
+  libraw_dcraw_clear_mem(img);
+  return h->rgbFloat;
+}
+
+void lg_close(int handle) {
+  if(!handle) return;
+  LumiHandle* h = (LumiHandle*)(uintptr_t)handle;
+  if(h->rgbFloat) free(h->rgbFloat);
+  if(h->raw) { h->raw->recycle(); delete h->raw; }
+  delete h;
+}
+
+int lg_get_last_error() { return g_last_error; }
+
+}
+
+WRAPPER_EOF
+          cat > build_nikon.sh <<'BUILD_EOF'
+#!/bin/bash
+# build_nikon.sh - Fixed for D7100 + Nikon Z NEF, 128MB memory
+set -e
+echo "=== LumiGold Nikon NEF Build FIXED ==="
+if ! command -v emcc &> /dev/null; then echo "ERROR emcc"; exit 1; fi
+echo "Found: $(emcc --version | head -n1)"
+
+LIBRAW_DIR=""
+if [ -n "$1" ] && [ -d "$1" ]; then LIBRAW_DIR="$1"; else
+  for cand in "./libraw" "./LibRaw" "./libraw-0.21.3" "./LibRaw-0.21.3"; do
+    if [ -d "$cand" ] && [ -f "$cand/libraw/libraw.h" ]; then LIBRAW_DIR="$cand"; break; fi
+  done
+fi
+
+if [ -z "$LIBRAW_DIR" ]; then
+  echo "LibRaw not found - downloading..."
+  if command -v wget &> /dev/null; then wget -q https://www.libraw.org/data/LibRaw-0.21.3.tar.gz -O /tmp/LibRaw.tar.gz
+  else curl -L https://www.libraw.org/data/LibRaw-0.21.3.tar.gz -o /tmp/LibRaw.tar.gz; fi
+  tar xzf /tmp/LibRaw.tar.gz -C /tmp
+  EXTRACTED=$(find /tmp -maxdepth 1 -type d -name "*LibRaw*" | head -n1)
+  if [ -z "$EXTRACTED" ]; then EXTRACTED=$(find /tmp -maxdepth 1 -type d -name "*libraw*" | head -n1); fi
+  rm -rf ./libraw; mv "$EXTRACTED" ./libraw; LIBRAW_DIR="./libraw"
+fi
+
+echo "LibRaw: $LIBRAW_DIR"
+if [ ! -f "$LIBRAW_DIR/libraw/libraw.h" ]; then echo "libraw.h missing"; exit 1; fi
+if [ ! -f "./lumiGoldRawWrapper.cpp" ]; then echo "wrapper missing"; exit 1; fi
+
+mkdir -p wasm
+
+LIBRAW_SRC=(
+  "$LIBRAW_DIR/src/libraw_c_api.cpp"
+  "$LIBRAW_DIR/src/libraw_datastream.cpp"
+  "$LIBRAW_DIR/src/decoders/canon_600.cpp"
+  "$LIBRAW_DIR/src/decoders/crx.cpp"
+  "$LIBRAW_DIR/src/decoders/pana8.cpp"
+  "$LIBRAW_DIR/src/decoders/decoders_dcraw.cpp"
+  "$LIBRAW_DIR/src/decoders/sonycc.cpp"
+  "$LIBRAW_DIR/src/decompressors/losslessjpeg.cpp"
+  "$LIBRAW_DIR/src/decoders/decoders_libraw_dcrdefs.cpp"
+  "$LIBRAW_DIR/src/decoders/olympus14.cpp"
+  "$LIBRAW_DIR/src/decoders/decoders_libraw.cpp"
+  "$LIBRAW_DIR/src/decoders/dng.cpp"
+  "$LIBRAW_DIR/src/decoders/fp_dng.cpp"
+  "$LIBRAW_DIR/src/decoders/fuji_compressed.cpp"
+  "$LIBRAW_DIR/src/decoders/generic.cpp"
+  "$LIBRAW_DIR/src/decoders/kodak_decoders.cpp"
+  "$LIBRAW_DIR/src/decoders/load_mfbacks.cpp"
+  "$LIBRAW_DIR/src/decoders/smal.cpp"
+  "$LIBRAW_DIR/src/decoders/unpack_thumb.cpp"
+  "$LIBRAW_DIR/src/decoders/unpack.cpp"
+  "$LIBRAW_DIR/src/demosaic/aahd_demosaic.cpp"
+  "$LIBRAW_DIR/src/demosaic/ahd_demosaic.cpp"
+  "$LIBRAW_DIR/src/demosaic/dcb_demosaic.cpp"
+  "$LIBRAW_DIR/src/demosaic/dht_demosaic.cpp"
+  "$LIBRAW_DIR/src/demosaic/misc_demosaic.cpp"
+  "$LIBRAW_DIR/src/demosaic/xtrans_demosaic.cpp"
+  "$LIBRAW_DIR/src/integration/dngsdk_glue.cpp"
+  "$LIBRAW_DIR/src/integration/rawspeed_glue.cpp"
+  "$LIBRAW_DIR/src/metadata/adobepano.cpp"
+  "$LIBRAW_DIR/src/metadata/canon.cpp"
+  "$LIBRAW_DIR/src/metadata/ciff.cpp"
+  "$LIBRAW_DIR/src/metadata/cr3_parser.cpp"
+  "$LIBRAW_DIR/src/metadata/epson.cpp"
+  "$LIBRAW_DIR/src/metadata/exif_gps.cpp"
+  "$LIBRAW_DIR/src/metadata/fuji.cpp"
+  "$LIBRAW_DIR/src/metadata/identify_tools.cpp"
+  "$LIBRAW_DIR/src/metadata/identify.cpp"
+  "$LIBRAW_DIR/src/metadata/kodak.cpp"
+  "$LIBRAW_DIR/src/metadata/leica.cpp"
+  "$LIBRAW_DIR/src/metadata/makernotes.cpp"
+  "$LIBRAW_DIR/src/metadata/mediumformat.cpp"
+  "$LIBRAW_DIR/src/metadata/minolta.cpp"
+  "$LIBRAW_DIR/src/metadata/misc_parsers.cpp"
+  "$LIBRAW_DIR/src/metadata/nikon.cpp"
+  "$LIBRAW_DIR/src/metadata/normalize_model.cpp"
+  "$LIBRAW_DIR/src/metadata/olympus.cpp"
+  "$LIBRAW_DIR/src/metadata/hasselblad_model.cpp"
+  "$LIBRAW_DIR/src/metadata/p1.cpp"
+  "$LIBRAW_DIR/src/metadata/pentax.cpp"
+  "$LIBRAW_DIR/src/metadata/samsung.cpp"
+  "$LIBRAW_DIR/src/metadata/sony.cpp"
+  "$LIBRAW_DIR/src/metadata/tiff.cpp"
+  "$LIBRAW_DIR/src/postprocessing/aspect_ratio.cpp"
+  "$LIBRAW_DIR/src/postprocessing/dcraw_process.cpp"
+  "$LIBRAW_DIR/src/postprocessing/mem_image.cpp"
+  "$LIBRAW_DIR/src/postprocessing/postprocessing_aux.cpp"
+  "$LIBRAW_DIR/src/postprocessing/postprocessing_utils_dcrdefs.cpp"
+  "$LIBRAW_DIR/src/postprocessing/postprocessing_utils.cpp"
+  "$LIBRAW_DIR/src/preprocessing/ext_preprocess.cpp"
+  "$LIBRAW_DIR/src/preprocessing/raw2image.cpp"
+  "$LIBRAW_DIR/src/preprocessing/subtract_black.cpp"
+  "$LIBRAW_DIR/src/tables/cameralist.cpp"
+  "$LIBRAW_DIR/src/tables/colorconst.cpp"
+  "$LIBRAW_DIR/src/tables/colordata.cpp"
+  "$LIBRAW_DIR/src/tables/wblists.cpp"
+  "$LIBRAW_DIR/src/utils/curves.cpp"
+  "$LIBRAW_DIR/src/utils/decoder_info.cpp"
+  "$LIBRAW_DIR/src/utils/init_close_utils.cpp"
+  "$LIBRAW_DIR/src/utils/open.cpp"
+  "$LIBRAW_DIR/src/utils/phaseone_processing.cpp"
+  "$LIBRAW_DIR/src/utils/read_utils.cpp"
+  "$LIBRAW_DIR/src/utils/thumb_utils.cpp"
+  "$LIBRAW_DIR/src/utils/utils_dcraw.cpp"
+  "$LIBRAW_DIR/src/utils/utils_libraw.cpp"
+  "$LIBRAW_DIR/src/write/apply_profile.cpp"
+  "$LIBRAW_DIR/src/write/file_write.cpp"
+  "$LIBRAW_DIR/src/write/tiff_writer.cpp"
+  "$LIBRAW_DIR/src/x3f/x3f_parse_process.cpp"
+  "$LIBRAW_DIR/src/x3f/x3f_utils_patched.cpp"
+)
+
+echo "Building ${#LIBRAW_SRC[@]} files with 128MB memory..."
+
+em++ "${LIBRAW_SRC[@]}" ./lumiGoldRawWrapper.cpp   -I"$LIBRAW_DIR" -I"$LIBRAW_DIR/src" -I"$LIBRAW_DIR/internal" -I"$LIBRAW_DIR/libraw"   -DLIBRAW_NO_WARNS   -s WASM=1   -s ALLOW_MEMORY_GROWTH=1   -s INITIAL_MEMORY=128MB   -s MAXIMUM_MEMORY=512MB   -s STACK_SIZE=4MB   -s MODULARIZE=1   -s EXPORT_NAME="LumiGoldRawModule"   -s EXPORTED_FUNCTIONS='["_lg_open","_lg_get_width","_lg_get_height","_lg_get_black","_lg_get_white","_lg_get_data_maximum","_lg_get_linear_max","_lg_get_cam_mul","_lg_get_cmatrix","_lg_get_rgb_cam","_lg_get_cam_xyz","_lg_extract_rgb","_lg_close","_malloc","_free","_lg_get_last_error"]'   -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAPF32","HEAP32","HEAPU32"]'   -s ENVIRONMENT=web,worker   -O2   -o wasm/lumiGoldRaw.js
+
+echo "=== Build OK ==="
+ls -lh wasm/
+echo "Expected: wasm ~1.5-3MB now, not 244KB"
+
+BUILD_EOF
+          chmod +x build_nikon.sh
+          echo "Wrapper size: $(wc -c < lumiGoldRawWrapper.cpp)"
+          echo "Build script:"
+          cat build_nikon.sh | tail -n20
+
+      - name: Build Nikon WASM in GitHub
+        run: |
           set -e
-          echo "Build exit code: $STATUS"
-          ls -lh wasm/ || echo "wasm dir missing"
-          if [ $STATUS -ne 0 ]; then
-            echo "::warning::Build failed with $STATUS, but continuing with existing wasm files if present"
-            mkdir -p wasm
-            # Keep existing files if build failed
-            ls -lh wasm/
+          emcc --version
+          mkdir -p wasm
+          ./build_nikon.sh
+          echo "=== BUILD RESULT ==="
+          ls -lh wasm/
+          du -h wasm/lumiGoldRaw.wasm
+          SIZE=$(stat -c%s wasm/lumiGoldRaw.wasm || stat -f%z wasm/lumiGoldRaw.wasm)
+          echo "WASM size bytes: $SIZE"
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "::error::WASM too small ($SIZE bytes) - expected 1.8-2.5MB, build stripped!"
+            exit 1
           fi
-          # Ensure we have something to deploy
-          test -f wasm/lumiGoldRaw.js || echo "Missing JS - Pages will deploy without wasm"
-          test -f wasm/lumiGoldRaw.wasm || echo "Missing WASM - Pages will deploy without wasm"
-          # Don't fail job here, let Pages deploy
-          exit 0
+          echo "WASM build OK >1MB"
+
+      - name: Commit new WASM back to repo (so Pages uses it)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add wasm/lumiGoldRaw.js wasm/lumiGoldRaw.wasm || true
+          git diff --staged --quiet || git commit -m "Auto-build WASM 128MB for Nikon NEF [skip ci]" || true
+          git push || echo "Push failed or nothing to push"
 
       - name: Prepare Pages site
         run: |
           mkdir -p _site/wasm
-          cp -v wasm/lumiGoldRaw.js _site/wasm/ 2>/dev/null || echo "no JS to copy"
-          cp -v wasm/lumiGoldRaw.wasm _site/wasm/ 2>/dev/null || echo "no WASM to copy"
+          cp -v wasm/lumiGoldRaw.js _site/wasm/
+          cp -v wasm/lumiGoldRaw.wasm _site/wasm/
           touch _site/.nojekyll
-          # Copy HTML
           cp -v *.html _site/ 2>/dev/null || true
-          # Prefer V10 as index if present
-          if [ -f "_site/index_V10_SCRIPT_TAG.html" ]; then
-            cp -v _site/index_V10_SCRIPT_TAG.html _site/index.html
-          fi
-          ls -lh _site/
-          ls -lh _site/wasm/ || echo "no wasm in _site"
+          # Use V12 minimal as index for testing
+          if [ -f "index_V12_MINIMAL.html" ]; then cp -v index_V12_MINIMAL.html _site/index.html; fi
+          if [ -f "index.html" ] && [ ! -f "_site/index.html" ]; then cp -v index.html _site/index.html; fi
+          ls -lh _site/wasm/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -72,7 +388,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${ steps.deployment.outputs.page_url }
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
