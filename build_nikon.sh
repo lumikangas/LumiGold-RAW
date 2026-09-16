@@ -7,15 +7,15 @@ echo "Found: $(emcc --version | head -n1)"
 
 LIBRAW_DIR=""
 if [ -n "$1" ] && [ -d "$1" ]; then LIBRAW_DIR="$1"; else
-  for cand in "./libraw" "./LibRaw" "./libraw-0.21.3" "./LibRaw-0.21.3"; do
+  for cand in "./libraw" "./LibRaw" "./libraw-0.22.2" "./LibRaw-0.22.2"; do
     if [ -d "$cand" ] && [ -f "$cand/libraw/libraw.h" ]; then LIBRAW_DIR="$cand"; break; fi
   done
 fi
 
 if [ -z "$LIBRAW_DIR" ]; then
   echo "LibRaw not found - downloading..."
-  if command -v wget &> /dev/null; then wget -q https://www.libraw.org/data/LibRaw-0.21.3.tar.gz -O /tmp/LibRaw.tar.gz
-  else curl -L https://www.libraw.org/data/LibRaw-0.21.3.tar.gz -o /tmp/LibRaw.tar.gz; fi
+  if command -v wget -q https://www.libraw.org/data/LibRaw-0.22.2.tar.gz -O /tmp/LibRaw.tar.gz
+  else curl -L https://www.libraw.org/data/LibRaw-0.22.2.tar.gz -o /tmp/LibRaw.tar.gz; fi
   tar xzf /tmp/LibRaw.tar.gz -C /tmp
   EXTRACTED=$(find /tmp -maxdepth 1 -type d -name "*LibRaw*" | head -n1)
   if [ -z "$EXTRACTED" ]; then EXTRACTED=$(find /tmp -maxdepth 1 -type d -name "*libraw*" | head -n1); fi
