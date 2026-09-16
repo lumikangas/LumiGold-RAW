@@ -1,33 +1,29 @@
 #!/bin/bash
-# build_nikon.sh - Fixed for D7100 + Nikon Z NEF, 128MB memory
+# build_nikon.sh - LibRaw 0.22.2 + 128MB for Nikon Zf/Z6 NEF
 set -e
-echo "=== LumiGold Nikon NEF Build FIXED ==="
-if ! command -v emcc &> /dev/null; then echo "ERROR emcc"; exit 1; fi
+echo "=== LumiGold Nikon NEF Build 0.22.2 FIXED ==="
+if ! command -v emcc &> /dev/null; then echo "ERROR emcc not found"; exit 1; fi
 echo "Found: $(emcc --version | head -n1)"
 
 LIBRAW_DIR=""
-if [ -n "$1" ] && [ -d "$1" ]; then LIBRAW_DIR="$1"; else
-  for cand in "./libraw" "./LibRaw" "./libraw-0.22.2" "./LibRaw-0.22.2"; do
-    if [ -d "$cand" ] && [ -f "$cand/libraw/libraw.h" ]; then LIBRAW_DIR="$cand"; break; fi
-  done
-fi
+for cand in "./libraw" "./LibRaw" "./libraw-0.22.2" "./LibRaw-0.22.2" "./libraw-0.21.3" "../libraw"; do
+  if [ -d "$cand" ] && [ -f "$cand/libraw/libraw.h" ]; then LIBRAW_DIR="$cand"; break; fi
+done
 
 if [ -z "$LIBRAW_DIR" ]; then
-  echo "LibRaw not found - downloading..."
-if command -v wget &> /dev/null; then
-  wget -q https://www.libraw.org/data/LibRaw-0.22.2.tar.gz -O /tmp/LibRaw.tar.gz
-else
-  curl -L https://www.libraw.org/data/LibRaw-0.22.2.tar.gz -o /tmp/LibRaw.tar.gz
-fi
+  echo "LibRaw not found - downloading 0.22.2..."
+  curl -L --fail --retry 3 https://www.libraw.org/data/LibRaw-0.22.2.tar.gz -o /tmp/LibRaw.tar.gz
   tar xzf /tmp/LibRaw.tar.gz -C /tmp
   EXTRACTED=$(find /tmp -maxdepth 1 -type d -name "*LibRaw*" | head -n1)
   if [ -z "$EXTRACTED" ]; then EXTRACTED=$(find /tmp -maxdepth 1 -type d -name "*libraw*" | head -n1); fi
-  rm -rf ./libraw; mv "$EXTRACTED" ./libraw; LIBRAW_DIR="./libraw"
+  echo "Extracted $EXTRACTED"
+  rm -rf ./libraw
+  mv "$EXTRACTED" ./libraw
+  LIBRAW_DIR="./libraw"
 fi
 
 echo "LibRaw: $LIBRAW_DIR"
-if [ ! -f "$LIBRAW_DIR/libraw/libraw.h" ]; then echo "libraw.h missing"; exit 1; fi
-if [ ! -f "./lumiGoldRawWrapper.cpp" ]; then echo "wrapper missing"; exit 1; fi
+cat "$LIBRAW_DIR/libraw/libraw.h" | head -n5
 
 mkdir -p wasm
 
@@ -113,10 +109,10 @@ LIBRAW_SRC=(
   "$LIBRAW_DIR/src/x3f/x3f_utils_patched.cpp"
 )
 
-echo "Building ${#LIBRAW_SRC[@]} files with 128MB memory..."
+echo "Building ${#LIBRAW_SRC[@]} files with 128MB..."
 
-em++ "${LIBRAW_SRC[@]}" ./lumiGoldRawWrapper.cpp   -I"$LIBRAW_DIR" -I"$LIBRAW_DIR/src" -I"$LIBRAW_DIR/internal" -I"$LIBRAW_DIR/libraw"   -DLIBRAW_NO_WARNS   -s WASM=1   -s ALLOW_MEMORY_GROWTH=1   -s INITIAL_MEMORY=128MB   -s MAXIMUM_MEMORY=512MB   -s STACK_SIZE=4MB   -s MODULARIZE=1   -s EXPORT_NAME="LumiGoldRawModule"   -s EXPORTED_FUNCTIONS='["_lg_open","_lg_get_width","_lg_get_height","_lg_get_black","_lg_get_white","_lg_get_data_maximum","_lg_get_linear_max","_lg_get_cam_mul","_lg_get_cmatrix","_lg_get_rgb_cam","_lg_get_cam_xyz","_lg_extract_rgb","_lg_close","_malloc","_free","_lg_get_last_error"]'   -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAPF32","HEAP32","HEAPU32"]'   -s ENVIRONMENT=web,worker   -O2   -o wasm/lumiGoldRaw.js
+em++ "${LIBRAW_SRC[@]}" ./lumiGoldRawWrapper.cpp   -I"$LIBRAW_DIR" -I"$LIBRAW_DIR/src" -I"$LIBRAW_DIR/internal" -I"$LIBRAW_DIR/libraw"   -DLIBRAW_NO_WARNS   -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=128MB -s MAXIMUM_MEMORY=512MB -s STACK_SIZE=4MB   -s MODULARIZE=1 -s EXPORT_NAME="LumiGoldRawModule"   -s EXPORTED_FUNCTIONS='["_lg_open","_lg_get_width","_lg_get_height","_lg_get_black","_lg_get_white","_lg_get_data_maximum","_lg_get_linear_max","_lg_get_cam_mul","_lg_get_cmatrix","_lg_get_rgb_cam","_lg_get_cam_xyz","_lg_extract_rgb","_lg_close","_malloc","_free","_lg_get_last_error"]'   -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAPF32","HEAP32","HEAPU32"]'   -s ENVIRONMENT=web,worker -O2   -o wasm/lumiGoldRaw.js
 
 echo "=== Build OK ==="
 ls -lh wasm/
-echo "Expected: wasm ~1.5-3MB now, not 244KB"
+echo "Expected ~2-3MB"
