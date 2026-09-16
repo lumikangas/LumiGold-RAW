@@ -26,38 +26,38 @@ jobs:
         with:
           version: 3.1.50
 
-      - name: Build Nikon WASM
+      - name: Build Nikon WASM (auto-downloads LibRaw)
         run: |
           chmod +x ./build_nikon.sh
           ./build_nikon.sh
           ls -lh wasm/
+          echo "Verifying outputs..."
           test -f wasm/lumiGoldRaw.js
           test -f wasm/lumiGoldRaw.wasm
-          echo "WASM build OK"
+          echo "WASM build OK: $(du -h wasm/lumiGoldRaw.wasm | cut -f1) + $(du -h wasm/lumiGoldRaw.js | cut -f1)"
 
-      - name: Prepare Pages artifact
+      - name: Prepare Pages site
         run: |
           mkdir -p _site/wasm
           cp -v wasm/lumiGoldRaw.js _site/wasm/
           cp -v wasm/lumiGoldRaw.wasm _site/wasm/
-          cp -v index.html _site/ || echo "no index.html"
-          cp -v .nojekyll _site/ || touch _site/.nojekyll
-          cp -v LumiGold-*.html _site/ 2>/dev/null || true
-          cp -v Wasm-*.html _site/ 2>/dev/null || true
+          cp -v .nojekyll _site/ 2>/dev/null || touch _site/.nojekyll
+          # Copy HTML - prefer your latest index if it exists
+          if [ -f "index_V10_SCRIPT_TAG.html" ]; then
+            cp -v index_V10_SCRIPT_TAG.html _site/index.html
+          elif [ -f "index.html" ]; then
+            cp -v index.html _site/index.html
+          fi
+          # Copy all HTML for testing
           cp -v *.html _site/ 2>/dev/null || true
-          ls -R _site
+          ls -lh _site/wasm/
+          ls -lh _site/*.html | head -n20
 
-      - name: Upload WASM artifact (debug)
+      - name: Upload debug artifacts
         uses: actions/upload-artifact@v4
         with:
           name: lumigold-raw-wasm
           path: wasm/
-
-      - name: Upload diagnostic artifact (debug)
-        uses: actions/upload-artifact@v4
-        with:
-          name: lumigold-nikon-diagnostic
-          path: _site/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
