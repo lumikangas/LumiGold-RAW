@@ -7476,8 +7476,7 @@ async function initLibRawDirect() {
     throw e;
   }
 }
-}
-}
+
 
 async function decodeRawDirect(buffer,fileName){
   const Module = await initLibRawDirect();
@@ -7563,7 +7562,7 @@ async function decodeRawDirect(buffer,fileName){
   return { width, height, float32RGB, meta, stats };
 }
 
-function showNikonDiagfunction showNikonDiag(meta, stats, needWasm) {
+function showNikonDiag(meta, stats, needWasm) {
   const panel = document.getElementById('rawDiagPanel');
   const content = document.getElementById('rawDiagContent');
   const fstats = document.getElementById('rawDiagFloatStats');
