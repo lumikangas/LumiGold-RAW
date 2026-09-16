@@ -489,7 +489,7 @@ input[type=range]::-webkit-slider-thumb:hover {
                         </svg>
                     </span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-zinc-300 group-hover:text-amber-500">IMPORT PHOTO</span>
-                    <input type="file" id="imgInput" accept="image/*" class="hidden">
+                    <input type="file" id="imgInput" accept="image/*,.nef,.cr2,.cr3,.arw,.dng,.orf,.rw2,.raf,.pef,.tiff,.tif,.NRW,.nef" class="hidden">
                 </label>
             </div>
 
@@ -1266,7 +1266,7 @@ input[type=range]::-webkit-slider-thumb:hover {
                     <button id="exportBtn" class="w-full py-1.5 bg-amber-500 hover:bg-amber-400 transition-all text-black font-extrabold rounded text-[8px] uppercase tracking-wider shadow-lg"title="Export high quality jpg image.">
                         Export
                     </button>
-                    <input type="file" id="batchInput" multiple accept="image/*,.jpg,.jpeg,.png,.webp,.tiff" class="hidden">
+                    <input type="file" id="batchInput" multiple accept="image/*,.jpg,.jpeg,.png,.webp,.tiff,.nef,.cr2,.cr3,.arw,.dng,.orf,.rw2,.raf,.pef" class="hidden">
                 </div>
             </div>
         </div>
@@ -7345,470 +7345,151 @@ const zoom = Math.pow(2, t);
 
         
 // --- LumiGold RAW Front-Door Interceptor (0.9KB, memory-safe) ---
-const RAW_EXTS = ['cr2','cr3','nef','arw','dng','orf','rw2','raf','pef'];
+
+// --- LumiGold RAW Front-Door Interceptor V14 DIRECT 0.22.2 ---
+const RAW_EXTS = ['cr2','cr3','nef','arw','dng','orf','rw2','raf','pef','nrw','tiff','tif'];
 function scanJpegStreamLinear(bytes){
-  const candidates=[];
-  const len=bytes.length;
-  let activeSOI=-1;
-  for(let i=0;i<len-1;i++){
-    if(bytes[i]===0xFF && bytes[i+1]===0xD8){
-      if(activeSOI===-1) activeSOI=i;
-    } else if(bytes[i]===0xFF && bytes[i+1]===0xD9){
-      if(activeSOI!==-1){
-        const start=activeSOI;
-        const end=i+2;
-        const size=end-start;
-        if(size>30000) candidates.push({start,end,size});
-        activeSOI=-1;
-      }
-    }
+  const candidates=[]; let activeSOI=-1;
+  for(let i=0;i<bytes.length-1;i++){
+    if(bytes[i]===0xFF && bytes[i+1]===0xD8){ if(activeSOI===-1) activeSOI=i; }
+    else if(bytes[i]===0xFF && bytes[i+1]===0xD9){ if(activeSOI!==-1){ const size=i+2-activeSOI; if(size>30000) candidates.push({start:activeSOI,end:i+2,size}); activeSOI=-1; } }
   }
+  candidates.sort((a,b)=>b.size-a.size);
   return candidates;
 }
 function getImageDimensions(url){
-  return new Promise(resolve=>{
+  return new Promise(res=>{
     const img=new Image();
-    img.onload=()=>resolve({w:img.naturalWidth,h:img.naturalHeight});
-    img.onerror=()=>resolve(null);
+    img.onload=()=>res({w:img.width,h:img.height});
+    img.onerror=()=>res(null);
     img.src=url;
   });
 }
-
-
-// --- ORIGINAL RAW INTERCEPTOR SAVED FOR FALLBACK ---
-const _originalInterceptRawIfNeeded = async function(file){
-  const ext = file.name.split('.').pop().toLowerCase();
-  if(!RAW_EXTS.includes(ext)) return file;
-  if(typeof showCustomToast === 'function'){
-    showCustomToast("RAW Detected", "Extracting preview from " + file.name + "...");
-  }
-  let arrayBuffer = null;
-  try {
-    arrayBuffer = await file.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-    const candidates = scanJpegStreamLinear(bytes);
-    if(candidates.length === 0){
-      if(typeof showCustomToast === 'function') showCustomToast("RAW Warning", "No embedded JPEG found.");
-      return null;
-    }
-    const probed = await Promise.all(candidates.map(async (c) => {
-      const blob = new Blob([bytes.subarray(c.start, c.end)], {type: 'image/jpeg'});
-      const url = URL.createObjectURL(blob);
-      const dims = await getImageDimensions(url);
-      return { blob, url, dims };
-    }));
-    const valid = probed.filter(p => p.dims !== null);
-    if(valid.length > 0){
-      valid.sort((a, b) => (b.dims.w * b.dims.h) - (a.dims.w * a.dims.h));
-      const winner = valid[0];
-      valid.forEach(p => { if(p !== winner) URL.revokeObjectURL(p.url); });
-      URL.revokeObjectURL(winner.url);
-      if(typeof showCustomToast === 'function'){
-        showCustomToast("Preview Ready", "Loaded " + winner.dims.w + "×" + winner.dims.h + " from " + file.name);
-      }
-      const cleanName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
-      const extractedFile = new File([winner.blob], `${cleanName}_preview.jpg`, { type: 'image/jpeg' });
-      return extractedFile;
-    } else {
-      probed.forEach(p => { if(p.url) URL.revokeObjectURL(p.url); });
-      if(typeof showCustomToast === 'function') showCustomToast("RAW Warning", "Failed to decode preview.");
-      return null;
-    }
-  } catch(err) {
-    console.warn("RAW extraction failed:", err);
-    if(typeof showCustomToast === 'function') showCustomToast("RAW Error", "Could not read container.");
-    return null;
-  } finally {
-    arrayBuffer = null;
-  }
-};
-
-// --- NEW LIBRAW DIAGNOSTIC INTERCEPTOR - HOOKS ACTUAL FILE-INPUT PATH ---
-// This replaces interceptRawIfNeeded which IS the real entry point (called inside handleImageFile)
-// Architecture: NEF -> LibRaw -> Float32 linear -> LumiGold, fallback to JPEG preview
-
-window.LumiGoldRawState = {
-  worker: null,
-  ready: false,
-  hasWasm: false,
-  pendingResolve: null,
-  pendingFile: null,
-  lastMeta: null,
-  lastStats: null
-};
-
-
-// --- INLINE BLOB WORKER - NO EXTERNAL FILE NEEDED - FIXES GITHUB PAGES 404 ---
-const WORKER_CODE = `
-let Module = null;
-let WASM_JS_URL = null;
-let WASM_BASE_URL = null;
-
-async function init() {
-  try {
-    // WASM_JS_URL is set from main thread via absolute URL
-    const jsUrl = WASM_JS_URL || './wasm/lumiGoldRaw.js';
-    const baseUrl = WASM_BASE_URL || './wasm/';
-    console.log('[WORKER] Importing ' + jsUrl);
-    console.log('[WORKER] Base URL for wasm binary: ' + baseUrl);
-    const mod = await import(jsUrl);
-    console.log('[WORKER] WASM JS loaded, initializing Module...');
-    Module = await mod.default({
-      locateFile: (p) => {
-        const full = baseUrl + p;
-        console.log('[WORKER] locateFile: ' + p + ' -> ' + full);
-        return full;
-      }
+window.LumiGoldRawState = window.LumiGoldRawState || { Module:null, ready:false, lastFloat32:null, lastMeta:null, lastStats:null };
+async function initLibRawDirect(){
+  if(window.LumiGoldRawState.Module) return window.LumiGoldRawState.Module;
+  const wasmBaseUrl = new URL('./wasm/', location.href).href;
+  const wasmJsUrl = wasmBaseUrl + 'lumiGoldRaw.js';
+  const wasmBinaryUrl = wasmBaseUrl + 'lumiGoldRaw.wasm';
+  try{
+    const h=await fetch(wasmBinaryUrl,{method:'HEAD'});
+    console.log('[LumiGold RAW] WASM HEAD status='+h.status+' len='+h.headers.get('content-length')+' expect ~2MB');
+  }catch(e){ console.warn('WASM HEAD failed',e); }
+  if(typeof LumiGoldRawModule==='undefined'){
+    console.log('[LumiGold RAW] Loading '+wasmJsUrl+' via script tag...');
+    await new Promise((resolve,reject)=>{
+      const s=document.createElement('script'); s.src=wasmJsUrl; s.async=false;
+      s.onload=()=>{ console.log('[LumiGold RAW] Script loaded, LumiGoldRawModule='+typeof LumiGoldRawModule); resolve(); };
+      s.onerror=(e)=>{ console.error('Script load error',e); reject(e); };
+      document.head.appendChild(s);
     });
-    console.log('[WORKER] Module ready, has _lg_open=' + (typeof Module._lg_open));
-    postMessage({ type: 'ready', hasWasm: true });
-  } catch(e) {
-    console.error('[WORKER] Init failed', e);
-    postMessage({ type: 'ready', hasWasm: false, error: e.message, stack: e.stack + '
-jsUrl=' + WASM_JS_URL });
   }
+  console.log('[LumiGold RAW] Calling LumiGoldRawModule()...');
+  const Module = await LumiGoldRawModule({locateFile:(p)=>{ const full=wasmBaseUrl+p; console.log('[LumiGold RAW] locateFile '+p+' -> '+full); return full; }});
+  console.log('[LumiGold RAW] Module ready _lg_open='+typeof Module._lg_open);
+  window.LumiGoldRawState.Module=Module; window.LumiGoldRawState.ready=true;
+  return Module;
 }
-
-self.onmessage = async (e) => {
-  const { id, buffer, fileName, wasmJsUrl, wasmBaseUrl } = e.data;
-  if (wasmJsUrl) WASM_JS_URL = wasmJsUrl;
-  if (wasmBaseUrl) WASM_BASE_URL = wasmBaseUrl;
-  
-  if (!buffer) {
-    // Just setting URLs
-    console.log('[WORKER] URLs set, calling init');
-    await init();
-    return;
-  }
-  
-  console.log('[WORKER] Received file', fileName, buffer.byteLength);
-  try {
-    if (!Module) {
-      console.log('[WORKER] Module not ready, calling init()');
-      await init();
-      if (!Module) {
-        console.log('[WORKER] No Module after init, needWasm fallback');
-        postMessage({ id, type: 'needWasm', fileName, size: buffer.byteLength });
-        return;
-      }
-    }
-    console.log('[WORKER] Allocating', buffer.byteLength);
-    const ptr = Module._malloc(buffer.byteLength);
-    Module.HEAPU8.set(new Uint8Array(buffer), ptr);
-    console.log('[WORKER] Calling _lg_open');
-    const ret = Module._lg_open(ptr, buffer.byteLength);
-    console.log('[WORKER] _lg_open ret=' + ret);
-    if (ret !== 0) throw new Error('lg_open failed: ' + ret);
-
-    const width = Module._lg_get_width();
-    const height = Module._lg_get_height();
-    console.log('[WORKER] Decoded w=' + width + ' h=' + height);
-    
-    const black = Module._lg_get_black();
-    const white = Module._lg_get_white();
-    const data_maximum = Module._lg_get_data_maximum();
-    
-    const linear_max = [
-      Module._lg_get_linear_max(0),
-      Module._lg_get_linear_max(1),
-      Module._lg_get_linear_max(2),
-      Module._lg_get_linear_max(3)
-    ];
-    
-    const cam_mul = [
-      Module._lg_get_cam_mul(0),
-      Module._lg_get_cam_mul(1),
-      Module._lg_get_cam_mul(2),
-      Module._lg_get_cam_mul(3)
-    ];
-
-    const rgb_cam = [];
-    const cam_xyz = [];
-    for (let r=0;r<3;r++) {
-      for (let c=0;c<4;c++) rgb_cam.push(Module._lg_get_rgb_cam(r,c));
-    }
-    for (let r=0;r<4;r++) {
-      for (let c=0;c<3;c++) cam_xyz.push(Module._lg_get_cam_xyz(r,c));
-    }
-
-    const numFloats = width * height * 3;
-    const outBytes = numFloats * 4;
-    console.log('[WORKER] Allocating out ' + outBytes);
-    const outPtr = Module._malloc(outBytes);
-    
-    const extractRet = Module._lg_extract_rgb(outPtr);
-    console.log('[WORKER] extract ret=' + extractRet);
-    if (extractRet !== 0) throw new Error('lg_extract_rgb failed ' + extractRet);
-
-    const floatView = new Float32Array(Module.HEAPF32.buffer, outPtr / 4, numFloats);
-    const result = new Float32Array(floatView);
-
-    let min=Infinity, max=-Infinity, sum=0, sumR=0, sumG=0, sumB=0;
-    for (let i=0;i<result.length;i+=3){ 
-      const r=result[i], g=result[i+1], b=result[i+2]; 
-      if(r<min)min=r; if(g<min)min=g; if(b<min)min=b; 
-      if(r>max)max=r; if(g>max)max=g; if(b>max)max=b; 
-      sum+=r+g+b; sumR+=r; sumG+=g; sumB+=b; 
-    }
-    const total = result.length/3;
-    const stats = { min, max, mean: sum/(total*3), rMean: sumR/total, gMean: sumG/total, bMean: sumB/total };
-
-    Module._free(outPtr);
+async function decodeRawDirect(buffer,fileName){
+  const Module = await initLibRawDirect();
+  console.log('[LumiGold RAW] Allocating '+buffer.byteLength+' for '+fileName);
+  const ptr = Module._malloc(buffer.byteLength);
+  Module.HEAPU8.set(new Uint8Array(buffer), ptr);
+  console.log('[LumiGold RAW] Calling _lg_open ptr='+ptr+' len='+buffer.byteLength);
+  const handle = Module._lg_open(ptr, buffer.byteLength);
+  console.log('[LumiGold RAW] _lg_open handle='+handle);
+  if(!handle || handle===0){
+    const err = Module._lg_get_last_error ? Module._lg_get_last_error() : -1;
     Module._free(ptr);
-    Module._lg_close();
-
-    console.log('[WORKER] Posting decoded', width, height, stats);
-    postMessage({
-      id,
-      type: 'decoded',
-      width,
-      height,
-      buffer: result.buffer,
-      meta: {
-        black,
-        white,
-        data_maximum,
-        linear_max,
-        cam_mul,
-        rgb_cam,
-        cam_xyz,
-        fileName,
-        width,
-        height,
-        fileType: fileName.toLowerCase().endsWith('.nef') ? 'Nikon NEF / LibRaw' : 'RAW / LibRaw'
-      },
-      stats
-    }, [result.buffer]);
-
-  } catch (err) {
-    console.error('[WORKER] Error', err);
-    postMessage({ id, type: 'error', message: err.message, stack: err.stack });
+    throw new Error('lg_open failed 0 err='+err);
   }
+  const width = Module._lg_get_width(handle);
+  const height = Module._lg_get_height(handle);
+  const black = Module._lg_get_black(handle);
+  const white = Module._lg_get_white(handle);
+  const data_maximum = Module._lg_get_data_maximum ? Module._lg_get_data_maximum(handle) : white;
+  let cam_mul=[1,1,1,1];
+  try{
+    const camPtr=Module._lg_get_cam_mul(handle);
+    if(camPtr){ const f=Module.HEAPF32.subarray(camPtr/4,camPtr/4+4); cam_mul=[f[0],f[1],f[2],f[3]]; }
+  }catch(e){}
+  console.log(`[LumiGold RAW] Decoded ${width}x${height} black=${black} white=${white} cam_mul=${cam_mul.join(',')}`);
+  if(width===0||height===0){ Module._lg_close(handle); Module._free(ptr); throw new Error('zero size'); }
+  const floatPtr = Module._lg_extract_rgb(handle);
+  console.log('[LumiGold RAW] floatPtr='+floatPtr);
+  if(!floatPtr){ Module._lg_close(handle); Module._free(ptr); throw new Error('extract null'); }
+  const num = width*height*3;
+  const view = Module.HEAPF32.subarray(floatPtr/4, floatPtr/4+num);
+  const float32RGB = new Float32Array(view);
+  const stats={ min:0, max:1, mean:0.5 };
+  Module._lg_close(handle); Module._free(ptr);
+  const meta={ black, white, data_maximum, cam_mul, fileName, width, height, fileType: fileName.toLowerCase().endsWith('.nef') ? 'Nikon NEF / LibRaw 0.22.2' : 'RAW / LibRaw 0.22.2' };
+  return { width, height, float32RGB, meta, stats };
+}
+window._originalInterceptRawIfNeeded = window._originalInterceptRawIfNeeded || async function(file){
+  const ext=file.name.split('.').pop().toLowerCase();
+  if(!RAW_EXTS.includes(ext)) return file;
+  if(typeof showCustomToast==='function') showCustomToast("RAW Detected","Extracting preview from "+file.name+"...");
+  try{
+    const arrayBuffer=await file.arrayBuffer();
+    const bytes=new Uint8Array(arrayBuffer);
+    const candidates=scanJpegStreamLinear(bytes);
+    if(candidates.length===0){ if(typeof showCustomToast==='function') showCustomToast("RAW Warning","No embedded JPEG found."); return null; }
+    const probed=await Promise.all(candidates.slice(0,5).map(async c=>{
+      const blob=new Blob([bytes.subarray(c.start,c.end)],{type:'image/jpeg'});
+      const url=URL.createObjectURL(blob);
+      const dims=await getImageDimensions(url);
+      return {blob,url,dims};
+    }));
+    const valid=probed.filter(p=>p.dims!==null);
+    if(valid.length>0){
+      valid.sort((a,b)=>(b.dims.w*b.dims.h)-(a.dims.w*a.dims.h));
+      const winner=valid[0];
+      valid.forEach(p=>{ if(p!==winner) URL.revokeObjectURL(p.url); });
+      URL.revokeObjectURL(winner.url);
+      if(typeof showCustomToast==='function') showCustomToast("Preview Ready","Loaded "+winner.dims.w+"×"+winner.dims.h+" from "+file.name);
+      const cleanName=file.name.substring(0,file.name.lastIndexOf('.'))||file.name;
+      return new File([winner.blob], `${cleanName}_preview.jpg`, {type:'image/jpeg'});
+    }else{ probed.forEach(p=>{ if(p.url) URL.revokeObjectURL(p.url); }); return null; }
+  }catch(err){ console.warn("RAW extraction failed",err); return null; }
 };
-`;
-
-
-function initLibRawWorker() {
-  if (window.LumiGoldRawState.worker) return window.LumiGoldRawState.worker;
-  console.log('[LumiGold RAW] Initializing LibRaw worker from Blob with absolute URLs...');
-  try {
-    const wasmJsUrl = new URL('./wasm/lumiGoldRaw.js', location.href).href;
-    const wasmBaseUrl = new URL('./wasm/', location.href).href;
-    console.log('[LumiGold RAW] wasmJsUrl = ' + wasmJsUrl);
-    console.log('[LumiGold RAW] wasmBaseUrl = ' + wasmBaseUrl);
-    
-    const blob = new Blob([WORKER_CODE], {type: 'application/javascript'});
-    const url = URL.createObjectURL(blob);
-    const worker = new Worker(url, {type: 'module'});
-    
-    // Set URLs immediately
-    worker.postMessage({ wasmJsUrl: wasmJsUrl, wasmBaseUrl: wasmBaseUrl });
-    
-    worker.onmessage = function(e) {
-      const msg = e.data;
-      if (msg.type === 'ready') {
-        window.LumiGoldRawState.ready = true;
-        window.LumiGoldRawState.hasWasm = !!msg.hasWasm;
-        console.log('[LumiGold RAW] Worker ready, hasWasm=' + msg.hasWasm + (msg.error ? ' error=' + msg.error : ''));
-        if (msg.error) console.error('[WORKER READY ERROR]', msg.error, msg.stack);
-        if (!msg.hasWasm && window.LumiGoldRawState.pendingResolve) {
-          console.log('[LumiGold RAW] No WASM, falling back to JPEG preview - check wasm/ files at: ' + wasmJsUrl);
-          (async () => {
-            const fallback = await _originalInterceptRawIfNeeded(window.LumiGoldRawState.pendingFile);
-            window.LumiGoldRawState.pendingResolve(fallback);
-            window.LumiGoldRawState.pendingResolve = null;
-          })();
-        }
-        return;
-      }
-      if (msg.type === 'needWasm') {
-        console.log('[LumiGold RAW] WASM not built, using JPEG fallback for ' + msg.fileName);
-        showNikonDiag({ fileName: msg.fileName, fileType: 'Nikon NEF (JPEG fallback - build WASM)', width:0, height:0, black:'— (build WASM)', maximum:'—', data_maximum:'—', linear_max:['—','—','—','—'], cam_mul:['—','—','—','—'] }, null, true);
-        (async () => {
-          const fallback = await _originalInterceptRawIfNeeded(window.LumiGoldRawState.pendingFile);
-          if (window.LumiGoldRawState.pendingResolve) {
-            window.LumiGoldRawState.pendingResolve(fallback);
-            window.LumiGoldRawState.pendingResolve = null;
-          }
-        })();
-        return;
-      }
-      if (msg.type === 'decoded') {
-        console.log('[LumiGold] RAW detected... Nikon NEF -> LibRaw -> Float32 -> LumiGold', msg.meta.fileName);
-        console.log('[LumiGold RAW] Decoded', msg.meta, msg.stats);
-        showNikonDiag(msg.meta, msg.stats, false);
-        try {
-          const float32RGB = new Float32Array(msg.buffer);
-          const w = msg.width, h = msg.height;
-          window.LumiGoldRawState.lastFloat32 = float32RGB;
-          window.LumiGoldRawState.lastMeta = msg.meta;
-          window.LumiGoldRawState.lastStats = msg.stats;
-          
-          const canvas = document.createElement('canvas');
-          canvas.width = w; canvas.height = h;
-          const ctx = canvas.getContext('2d');
-          const imgData = ctx.createImageData(w, h);
-          for (let i=0, j=0; i<float32RGB.length; i+=3, j+=4) {
-            const r = Math.pow(Math.min(1, Math.max(0, float32RGB[i])), 1/2.2) * 255;
-            const g = Math.pow(Math.min(1, Math.max(0, float32RGB[i+1])), 1/2.2) * 255;
-            const b = Math.pow(Math.min(1, Math.max(0, float32RGB[i+2])), 1/2.2) * 255;
-            imgData.data[j]=r; imgData.data[j+1]=g; imgData.data[j+2]=b; imgData.data[j+3]=255;
-          }
-          ctx.putImageData(imgData,0,0);
-          canvas.toBlob(function(blob){
-            const cleanName = msg.meta.fileName ? msg.meta.fileName.replace(/\.[^/.]+$/, '') : 'Nikon_NEF';
-            const file = new File([blob], cleanName + '_linear_preview.png', {type:'image/png'});
-            file._isRawLinearPreview = true;
-            file._rawFloat32 = float32RGB;
-            file._rawMeta = msg.meta;
-            file._isRawPreview = true;
-            if (window.LumiGoldRawState.pendingResolve) {
-              window.LumiGoldRawState.pendingResolve(file);
-              window.LumiGoldRawState.pendingResolve = null;
-            }
-          }, 'image/png');
-        } catch(err) {
-          console.error('Float32 conversion failed, falling back to JPEG', err);
-          (async () => {
-            const fallback = await _originalInterceptRawIfNeeded(window.LumiGoldRawState.pendingFile);
-            if (window.LumiGoldRawState.pendingResolve) {
-              window.LumiGoldRawState.pendingResolve(fallback);
-              window.LumiGoldRawState.pendingResolve = null;
-            }
-          })();
-        }
-        return;
-      }
-      if (msg.type === 'error') {
-        console.error('[LumiGold RAW] LibRaw decode failed, falling back to JPEG', msg.message);
-        console.error(msg.stack);
-        showNikonDiag({ error: 'LibRaw failed: ' + msg.message + ' — JPEG fallback', fileName: window.LumiGoldRawState.pendingFile ? window.LumiGoldRawState.pendingFile.name : 'NEF' }, null, false);
-        (async () => {
-          const fallback = await _originalInterceptRawIfNeeded(window.LumiGoldRawState.pendingFile);
-          if (window.LumiGoldRawState.pendingResolve) {
-            window.LumiGoldRawState.pendingResolve(fallback);
-            window.LumiGoldRawState.pendingResolve = null;
-          }
-        })();
-      }
-    };
-    worker.onerror = function(e) {
-      console.error('[LumiGold RAW] Worker onerror event', e.message, e);
-      console.error('[LumiGold RAW] wasmJsUrl tried: ' + wasmJsUrl);
-      console.error('Error:', e);
-      if (typeof showCustomToast === 'function') showCustomToast("WASM Error", e.message || 'Worker failed - check wasm/ files exist at ' + wasmJsUrl, true);
-      (async () => {
-        const fallback = await _originalInterceptRawIfNeeded(window.LumiGoldRawState.pendingFile);
-        if (window.LumiGoldRawState.pendingResolve) {
-          window.LumiGoldRawState.pendingResolve(fallback);
-          window.LumiGoldRawState.pendingResolve = null;
-        }
-      })();
-    };
-    window.LumiGoldRawState.worker = worker;
-    window.LumiGoldRawState.wasmJsUrl = wasmJsUrl;
-    console.log('[LumiGold RAW] Blob worker created with absolute URLs, waiting for ready...');
-    return worker;
-  } catch(e) {
-    console.error('[LumiGold RAW] Failed to create Blob worker, JPEG fallback', e);
-    return null;
-  }
-}
-
-
-function showNikonDiag(meta, stats, needWasm) {
-  const panel = document.getElementById('rawDiagPanel');
-  const content = document.getElementById('rawDiagContent');
-  const fstats = document.getElementById('rawDiagFloatStats');
-  if (!panel || !content) return;
-  panel.classList.remove('hidden');
-  if (meta.error) {
-    content.innerHTML = '<div style="color:#f87171">' + meta.error + '</div>';
-    return;
-  }
-  const wh = meta.width && meta.height ? meta.width + ' × ' + meta.height : (needWasm ? 'WASM not built' : '—');
-  const lm = (meta.linear_max||[]).join(' / ');
-  const cm = (meta.cam_mul||[]).map(v => typeof v==='number' ? v.toFixed(3) : v).join(' / ');
-  const fileType = meta.fileType || (meta.fileName && meta.fileName.toLowerCase().endsWith('.nef') ? 'Nikon NEF / LibRaw' : 'RAW / LibRaw');
-  content.innerHTML = 
-    '<div style="color:#fde68a;font-weight:bold">' + (needWasm ? fileType + ' (JPEG fallback)' : fileType) + '</div>' +
-    '<div style="color:#d4d4d8">' + (meta.fileName||'') + '</div>' +
-    '<div style="color:#a1a1aa">' + wh + '</div>' +
-    '<div style="margin-top:8px">' +
-      '<div><span style="color:#71717a">Black:</span> <span style="color:#e4e4e7">' + (meta.black!==undefined?meta.black:'—') + '</span></div>' +
-      '<div><span style="color:#71717a">Maximum:</span> <span style="color:#e4e4e7">' + (meta.maximum!==undefined?meta.maximum:meta.white||'—') + '</span></div>' +
-      '<div><span style="color:#71717a">Data maximum:</span> <span style="color:#e4e4e7">' + (meta.data_maximum!==undefined?meta.data_maximum:'—') + '</span></div>' +
-      '<div><span style="color:#71717a">Linear max:</span> <span style="color:#e4e4e7">' + lm + '</span></div>' +
-      '<div><span style="color:#71717a">Cam mul:</span> <span style="color:#e4e4e7">' + cm + '</span></div>' +
-      (needWasm ? '<div style="margin-top:8px;color:rgba(251,191,36,0.8)">Build wasm/lumiGoldRaw.js to enable linear Float32 path</div>' : '') +
-    '</div>';
-  if (stats && fstats) {
-    const sane = (stats.min>=0 && stats.max<=1.05 && stats.mean>0.01 && stats.mean<0.9) ? '✓ sane linear' : '⚠ check scaling';
-    fstats.innerHTML = 'min: ' + stats.min.toFixed(6) + ' • max: ' + stats.max.toFixed(6) + '<br>' +
-      'mean: ' + stats.mean.toFixed(6) + '<br>' +
-      'R mean: ' + stats.rMean.toFixed(6) + ' • G: ' + stats.gMean.toFixed(6) + ' • B: ' + stats.bMean.toFixed(6) + '<br>' +
-      '<span style="font-size:8px;color:#71717a">' + sane + '</span>';
-  } else if (fstats) {
-    fstats.textContent = needWasm ? 'WASM not built yet - JPEG fallback active' : '—';
-  }
-}
-
-// THIS IS THE REAL ENTRY POINT - REPLACES interceptRawIfNeeded
-async function interceptRawIfNeeded(file) {
-  const ext = file.name.split('.').pop().toLowerCase();
-  if (!RAW_EXTS.includes(ext)) {
-    return file;
-  }
-
-  // Log that wrapper IS intercepting - this is what you were missing
-  console.log('[LumiGold] RAW detected... trying LibRaw path for ' + file.name);
-  if (typeof showCustomToast === 'function') {
-    showCustomToast("RAW Detected", "LibRaw decoding " + file.name + "...");
-  }
-
-  // For NEF first test, try LibRaw WASM path
-  return new Promise(async (resolve) => {
-    window.LumiGoldRawState.pendingFile = file;
-    window.LumiGoldRawState.pendingResolve = resolve;
-    
-    const worker = initLibRawWorker();
-    if (!worker) {
-      console.log('[LumiGold] Worker failed, JPEG fallback');
-      const fallback = await _originalInterceptRawIfNeeded(file);
-      resolve(fallback);
-      return;
+async function interceptRawIfNeeded(file){
+  const ext=file.name.split('.').pop().toLowerCase();
+  if(!RAW_EXTS.includes(ext)) return file;
+  console.log('[LumiGold] RAW detected... trying LibRaw 0.22.2 path for '+file.name);
+  if(typeof showCustomToast==='function') showCustomToast("RAW Detected","LibRaw decoding "+file.name+"...");
+  try{
+    const buf=await file.arrayBuffer();
+    console.log('[LumiGold RAW] File buffer '+buf.byteLength+', decoding directly...');
+    const decoded=await decodeRawDirect(buf, file.name);
+    console.log('[LumiGold] RAW -> Float32', decoded.meta);
+    window.LumiGoldRawState.lastFloat32=decoded.float32RGB;
+    window.LumiGoldRawState.lastMeta=decoded.meta;
+    window.LumiGoldRawState.lastStats=decoded.stats;
+    // Convert Float32 to PNG for existing pipeline
+    const canvas=document.createElement('canvas'); canvas.width=decoded.width; canvas.height=decoded.height;
+    const ctx=canvas.getContext('2d'); const imgData=ctx.createImageData(decoded.width, decoded.height);
+    const f=decoded.float32RGB;
+    for(let i=0,j=0;i<f.length;i+=3,j+=4){
+      imgData.data[j]=Math.pow(Math.min(1,f[i]),1/2.2)*255;
+      imgData.data[j+1]=Math.pow(Math.min(1,f[i+1]),1/2.2)*255;
+      imgData.data[j+2]=Math.pow(Math.min(1,f[i+2]),1/2.2)*255;
+      imgData.data[j+3]=255;
     }
-
-    try {
-      const buf = await file.arrayBuffer();
-      // Try transfer, fallback to copy
-      try {
-        worker.postMessage({ id: Date.now(), buffer: buf, fileName: file.name }, [buf]);
-      } catch(e) {
-        worker.postMessage({ id: Date.now(), buffer: buf, fileName: file.name });
-      }
-      // Worker will resolve via pendingResolve
-      // Add timeout fallback (15s) to JPEG
-      setTimeout(async () => {
-        if (window.LumiGoldRawState.pendingResolve) {
-          console.warn('[LumiGold RAW] Timeout, falling back to JPEG');
-          const fallback = await _originalInterceptRawIfNeeded(file);
-          if (window.LumiGoldRawState.pendingResolve) {
-            window.LumiGoldRawState.pendingResolve(fallback);
-            window.LumiGoldRawState.pendingResolve = null;
-          }
-        }
-      }, 15000);
-    } catch(err) {
-      console.error('[LumiGold RAW] arrayBuffer failed, JPEG fallback', err);
-      const fallback = await _originalInterceptRawIfNeeded(file);
-      resolve(fallback);
-    }
-  });
+    ctx.putImageData(imgData,0,0);
+    const blob=await new Promise(r=>canvas.toBlob(r,'image/png'));
+    const cleanName=file.name.replace(/\.[^/.]+$/, '')||'Nikon_NEF';
+    const outFile=new File([blob], cleanName+'_linear_preview.png', {type:'image/png'});
+    outFile._isRawLinearPreview=true; outFile._rawFloat32=decoded.float32RGB; outFile._rawMeta=decoded.meta; outFile._isRawPreview=true;
+    return outFile;
+  }catch(err){
+    console.error('[LumiGold RAW] Direct decode failed, JPEG fallback', err);
+    return await window._originalInterceptRawIfNeeded(file);
+  }
 }
-
 
 async function handleImageFile(file) {
+
   if (!file) return;
 
   // Intercept RAW files at the front door
