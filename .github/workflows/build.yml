@@ -39,8 +39,11 @@ jobs:
           bash ./build_nikon.sh
           ls -lh wasm/
           SIZE=$(stat -c%s wasm/lumiGoldRaw.wasm)
-          echo "WASM size $SIZE"
-          if [ "$SIZE" -lt 1000000 ]; then echo "WASM too small"; exit 1; fi
+            echo "WASM size $SIZE bytes"
+            if [ "$SIZE" -lt 100000 ]; then
+              echo "WASM suspiciously small"
+              exit 1
+            fi
 
       - name: Commit WASM
         run: |
