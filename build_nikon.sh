@@ -1,69 +1,31 @@
 #!/bin/bash
-# build_nikon.sh - Tiny build for first Nikon NEF test
-# Produces: wasm/lumiGoldRaw.js + wasm/lumiGoldRaw.wasm
-# Auto-downloads LibRaw if missing (for GitHub Actions)
-
+# build_nikon.sh - Fixed for D7100 + Nikon Z NEF, 128MB memory
 set -e
-
-echo "=== LumiGold Nikon NEF Diagnostic Build ==="
-
-# 1. Check emcc
-if ! command -v emcc &> /dev/null; then
-  echo "ERROR: emcc not found"
-  exit 1
-fi
+echo "=== LumiGold Nikon NEF Build FIXED ==="
+if ! command -v emcc &> /dev/null; then echo "ERROR emcc"; exit 1; fi
 echo "Found: $(emcc --version | head -n1)"
 
-# 2. Find or download LibRaw
 LIBRAW_DIR=""
-
-if [ -n "$1" ] && [ -d "$1" ]; then
-  LIBRAW_DIR="$1"
-else
-  for cand in "./libraw" "./LibRaw" "../libraw" "../LibRaw" "./libraw-0.21.3" "./LibRaw-0.21.3"; do
-    if [ -d "$cand" ] && [ -f "$cand/libraw/libraw.h" ]; then
-      LIBRAW_DIR="$cand"
-      break
-    fi
+if [ -n "$1" ] && [ -d "$1" ]; then LIBRAW_DIR="$1"; else
+  for cand in "./libraw" "./LibRaw" "./libraw-0.21.3" "./LibRaw-0.21.3"; do
+    if [ -d "$cand" ] && [ -f "$cand/libraw/libraw.h" ]; then LIBRAW_DIR="$cand"; break; fi
   done
 fi
 
 if [ -z "$LIBRAW_DIR" ]; then
-  echo "LibRaw not found locally - downloading LibRaw-0.21.3..."
-  # Try wget, then curl
-  if command -v wget &> /dev/null; then
-    wget -q https://www.libraw.org/data/LibRaw-0.21.3.tar.gz -O /tmp/LibRaw-0.21.3.tar.gz
-  else
-    curl -L https://www.libraw.org/data/LibRaw-0.21.3.tar.gz -o /tmp/LibRaw-0.21.3.tar.gz
-  fi
-  tar xzf /tmp/LibRaw-0.21.3.tar.gz -C /tmp
-  # Find extracted dir (LibRaw-0.21.3 or libraw-0.21.3)
+  echo "LibRaw not found - downloading..."
+  if command -v wget &> /dev/null; then wget -q https://www.libraw.org/data/LibRaw-0.21.3.tar.gz -O /tmp/LibRaw.tar.gz
+  else curl -L https://www.libraw.org/data/LibRaw-0.21.3.tar.gz -o /tmp/LibRaw.tar.gz; fi
+  tar xzf /tmp/LibRaw.tar.gz -C /tmp
   EXTRACTED=$(find /tmp -maxdepth 1 -type d -name "*LibRaw*" | head -n1)
-  if [ -z "$EXTRACTED" ]; then
-    EXTRACTED=$(find /tmp -maxdepth 1 -type d -name "*libraw*" | head -n1)
-  fi
-  echo "Extracted to $EXTRACTED"
-  # Move to ./libraw for future runs
-  rm -rf ./libraw
-  mv "$EXTRACTED" ./libraw
-  LIBRAW_DIR="./libraw"
+  if [ -z "$EXTRACTED" ]; then EXTRACTED=$(find /tmp -maxdepth 1 -type d -name "*libraw*" | head -n1); fi
+  rm -rf ./libraw; mv "$EXTRACTED" ./libraw; LIBRAW_DIR="./libraw"
 fi
 
-echo "Found LibRaw: $LIBRAW_DIR"
+echo "LibRaw: $LIBRAW_DIR"
+if [ ! -f "$LIBRAW_DIR/libraw/libraw.h" ]; then echo "libraw.h missing"; exit 1; fi
+if [ ! -f "./lumiGoldRawWrapper.cpp" ]; then echo "wrapper missing"; exit 1; fi
 
-if [ ! -f "$LIBRAW_DIR/libraw/libraw.h" ]; then
-  echo "ERROR: libraw.h not found in $LIBRAW_DIR"
-  ls -la "$LIBRAW_DIR" || true
-  exit 1
-fi
-
-# 3. Check wrapper
-if [ ! -f "./lumiGoldRawWrapper.cpp" ]; then
-  echo "ERROR: lumiGoldRawWrapper.cpp not found"
-  exit 1
-fi
-
-# 4. Create wasm output dir
 mkdir -p wasm
 
 LIBRAW_SRC=(
@@ -148,14 +110,10 @@ LIBRAW_SRC=(
   "$LIBRAW_DIR/src/x3f/x3f_utils_patched.cpp"
 )
 
-echo "LibRaw sources: ${#LIBRAW_SRC[@]} files"
+echo "Building ${#LIBRAW_SRC[@]} files with 128MB memory..."
 
-echo "Building wasm/lumiGoldRaw.js ..."
+em++ "${LIBRAW_SRC[@]}" ./lumiGoldRawWrapper.cpp   -I"$LIBRAW_DIR" -I"$LIBRAW_DIR/src" -I"$LIBRAW_DIR/internal" -I"$LIBRAW_DIR/libraw"   -DLIBRAW_NO_WARNS   -s WASM=1   -s ALLOW_MEMORY_GROWTH=1   -s INITIAL_MEMORY=128MB   -s MAXIMUM_MEMORY=512MB   -s STACK_SIZE=4MB   -s MODULARIZE=1   -s EXPORT_NAME="LumiGoldRawModule"   -s EXPORTED_FUNCTIONS='["_lg_open","_lg_get_width","_lg_get_height","_lg_get_black","_lg_get_white","_lg_get_data_maximum","_lg_get_linear_max","_lg_get_cam_mul","_lg_get_cmatrix","_lg_get_rgb_cam","_lg_get_cam_xyz","_lg_extract_rgb","_lg_close","_malloc","_free","_lg_get_last_error"]'   -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAPF32","HEAP32","HEAPU32"]'   -s ENVIRONMENT=web,worker   -O2   -o wasm/lumiGoldRaw.js
 
-em++ "${LIBRAW_SRC[@]}"   ./lumiGoldRawWrapper.cpp   -I"$LIBRAW_DIR"   -I"$LIBRAW_DIR/src"   -I"$LIBRAW_DIR/internal"   -I"$LIBRAW_DIR/libraw"   -DLIBRAW_NO_WARNS   -s WASM=1   -s ALLOW_MEMORY_GROWTH=1   -s MODULARIZE=1   -s EXPORT_NAME="LumiGoldRawModule"   -s EXPORTED_FUNCTIONS='["_lg_open","_lg_get_width","_lg_get_height","_lg_get_black","_lg_get_white","_lg_get_data_maximum","_lg_get_linear_max","_lg_get_cam_mul","_lg_get_cmatrix","_lg_get_rgb_cam","_lg_get_cam_xyz","_lg_extract_rgb","_lg_close","_malloc","_free"]'   -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAPF32","HEAP32","HEAPU32"]'   -s INITIAL_MEMORY=32MB   -s STACK_SIZE=2MB   -s ENVIRONMENT=web,worker   -O2   -o wasm/lumiGoldRaw.js
-
-echo ""
 echo "=== Build OK ==="
 ls -lh wasm/
-echo ""
-echo "Next: Test Wasm-Test-FIXED.html"
+echo "Expected: wasm ~1.5-3MB now, not 244KB"
