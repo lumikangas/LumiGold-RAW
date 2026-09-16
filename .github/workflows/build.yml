@@ -29,7 +29,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: libraw
-          key: libraw-0.21.3
+          key: libraw-0.22.2
           
       - name: Build WASM
         run: |
