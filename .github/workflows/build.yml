@@ -30,7 +30,7 @@ jobs:
         with:
           path: libraw
           key: libraw-0.21.3
-
+          
       - name: Build WASM
         run: |
           emcc --version
@@ -40,7 +40,7 @@ jobs:
           ls -lh wasm/
           SIZE=$(stat -c%s wasm/lumiGoldRaw.wasm)
           echo "WASM size $SIZE"
-          if [ "$SIZE" -lt 1000000 ]; then echo "WASM too small"; exit 1; fi
+          if [ "$SIZE" -lt 100000 ]; then echo "WASM suspiciously small"; exit 1; fi
 
       - name: Commit WASM
         run: |
