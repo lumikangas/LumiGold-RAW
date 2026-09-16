@@ -7642,6 +7642,17 @@ console.log('[LumiGold RAW] FLOAT32 SANITY', {
   mean: sum / (float32RGB.length - bad),
   bad
 });
+      console.log('[LumiGold RAW] SAMPLE PIXELS', file.name,
+  float32RGB[0],
+  float32RGB[1],
+  float32RGB[2],
+  float32RGB[1000],
+  float32RGB[1001],
+  float32RGB[1002],
+  float32RGB[1000000],
+  float32RGB[1000001],
+  float32RGB[1000002]
+);
     const w = decoded.width, h = decoded.height;
     window.LumiGoldRawState.lastFloat32 = float32RGB;
     window.LumiGoldRawState.lastMeta = decoded.meta;
